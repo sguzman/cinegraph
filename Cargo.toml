@@ -9,6 +9,7 @@ members = [
     "crates/cinegraph-graph",
     "crates/cinegraph-export",
 ]
+default-members = ["crates/cinegraph-cli"]
 resolver = "3"
 
 [workspace.package]
