@@ -11,6 +11,7 @@ clap.workspace = true
 cinegraph-core = { path = "../cinegraph-core" }
 cinegraph-db = { path = "../cinegraph-db" }
 cinegraph-fetch = { path = "../cinegraph-fetch" }
+cinegraph-graph = { path = "../cinegraph-graph" }
 cinegraph-imdb = { path = "../cinegraph-imdb" }
 cinegraph-search = { path = "../cinegraph-search" }
 serde_json.workspace = true

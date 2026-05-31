@@ -2,7 +2,8 @@ use cinegraph_core::Result;
 use sqlx::Row;
 
 use crate::models::{
-    Dataset, DownloadArtifact, IndexablePerson, IndexableTitle, LookupPerson, LookupTitle,
+    Dataset, DownloadArtifact, GraphCredit, GraphPerson, GraphTitle, IndexablePerson,
+    IndexableTitle, LookupPerson, LookupTitle,
 };
 
 pub async fn upsert_dataset(
@@ -332,6 +333,55 @@ pub async fn people_by_ids_in_order(
         by_id.insert(row.imdb_name_id.clone(), row);
     }
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
+pub async fn titles_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<GraphTitle>> {
+    let rows = sqlx::query_as::<_, GraphTitle>(
+        r#"
+        SELECT imdb_id, primary_title, original_title, title_type, start_year
+        FROM titles
+        ORDER BY imdb_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn people_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<GraphPerson>> {
+    let rows = sqlx::query_as::<_, GraphPerson>(
+        r#"
+        SELECT imdb_name_id, primary_name, birth_year, death_year
+        FROM people
+        ORDER BY imdb_name_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn credits_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<GraphCredit>> {
+    let rows = sqlx::query_as::<_, GraphCredit>(
+        r#"
+        SELECT
+            c.imdb_id,
+            t.primary_title,
+            c.imdb_name_id,
+            p.primary_name,
+            c.ordering,
+            c.category,
+            c.job,
+            c.characters
+        FROM credits c
+        JOIN titles t ON t.imdb_id = c.imdb_id
+        JOIN people p ON p.imdb_name_id = c.imdb_name_id
+        ORDER BY c.imdb_id, c.ordering, c.imdb_name_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }
 
 pub async fn stats(pool: &sqlx::SqlitePool) -> Result<serde_json::Value> {

@@ -64,3 +64,32 @@ pub struct IndexablePerson {
     pub primary_professions: Option<String>,
     pub title_text: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct GraphTitle {
+    pub imdb_id: String,
+    pub primary_title: String,
+    pub original_title: Option<String>,
+    pub title_type: String,
+    pub start_year: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct GraphPerson {
+    pub imdb_name_id: String,
+    pub primary_name: String,
+    pub birth_year: Option<i64>,
+    pub death_year: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct GraphCredit {
+    pub imdb_id: String,
+    pub primary_title: String,
+    pub imdb_name_id: String,
+    pub primary_name: String,
+    pub ordering: Option<i64>,
+    pub category: Option<String>,
+    pub job: Option<String>,
+    pub characters: Option<String>,
+}

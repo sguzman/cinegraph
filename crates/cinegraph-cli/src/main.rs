@@ -4,13 +4,15 @@ use anyhow::Context;
 use cinegraph_core::{AppConfig, AppPaths, logging::init_logging};
 use cinegraph_db::{Database, queries};
 use cinegraph_fetch::Fetcher;
+use cinegraph_graph::GraphService;
 use cinegraph_imdb::import::ImdbImporter;
 use cinegraph_search::SearchService;
 use clap::Parser;
 use tracing::info;
 
 use crate::args::{
-    Cli, Commands, FetchCommands, ImportCommands, IndexCommands, LookupCommands, SearchCommands,
+    Cli, Commands, FetchCommands, GraphCommands, ImportCommands, IndexCommands, LookupCommands,
+    SearchCommands,
 };
 
 #[tokio::main]
@@ -49,6 +51,11 @@ async fn run_command(
         Commands::Index { command } => match command {
             IndexCommands::Search => {
                 let service = SearchService::open(paths)?;
+                let stats = service.rebuild(db).await?;
+                println!("{}", serde_json::to_string_pretty(&stats)?);
+            }
+            IndexCommands::Graph => {
+                let service = GraphService::open(config, paths)?;
                 let stats = service.rebuild(db).await?;
                 println!("{}", serde_json::to_string_pretty(&stats)?);
             }
@@ -97,6 +104,23 @@ async fn run_command(
                 println!("{}", serde_json::to_string_pretty(&rows)?);
             }
         },
+        Commands::Graph { command } => match command {
+            GraphCommands::Query { sparql_file } => {
+                let service = GraphService::open(config, paths)?;
+                let output = service.query_file(&sparql_file)?;
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
+            GraphCommands::Neighbors { entity_id } => {
+                let service = GraphService::open(config, paths)?;
+                let output = service.neighbors(&entity_id)?;
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
+            GraphCommands::Collaborations { person_id } => {
+                let service = GraphService::open(config, paths)?;
+                let output = service.collaborations(&person_id)?;
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
+        },
         Commands::Lookup { command } => match command {
             LookupCommands::Title { query } => {
                 let rows = queries::lookup_title(db.pool(), &query).await?;
@@ -117,6 +141,7 @@ async fn run_command(
                     "data_root": paths.root,
                     "sqlite_path": paths.sqlite_path(config),
                     "search_index_path": paths.search_index_dir(),
+                    "graph_store_path": paths.graph_store_dir(),
                     "stats": stats
                 }))?
             );

@@ -160,7 +160,8 @@ mod tests {
     use cinegraph_core::{
         AppConfig,
         config::{
-            DataConfig, FetchConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig, SqliteConfig,
+            DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
+            SqliteConfig,
         },
     };
     use tempfile::tempdir;
@@ -187,6 +188,9 @@ mod tests {
                     .join("logs/cinegraph.log")
                     .to_string_lossy()
                     .to_string(),
+            },
+            graph: GraphConfig {
+                base_iri: "https://cinegraph.local/".to_string(),
             },
             fetch: FetchConfig {
                 user_agent: "cinegraph-test".to_string(),

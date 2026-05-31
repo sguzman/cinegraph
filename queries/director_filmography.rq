@@ -1,0 +1,7 @@
+PREFIX schema: <https://schema.org/>
+
+SELECT ?film ?title WHERE {
+  ?film schema:director <https://cinegraph.local/person/nm1> .
+  ?film schema:name ?title .
+}
+ORDER BY ?title

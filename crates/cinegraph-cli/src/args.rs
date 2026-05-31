@@ -34,6 +34,10 @@ pub enum Commands {
         #[command(subcommand)]
         command: SearchCommands,
     },
+    Graph {
+        #[command(subcommand)]
+        command: GraphCommands,
+    },
     Lookup {
         #[command(subcommand)]
         command: LookupCommands,
@@ -54,6 +58,7 @@ pub enum ImportCommands {
 #[derive(Debug, Subcommand)]
 pub enum IndexCommands {
     Search,
+    Graph,
 }
 
 #[derive(Debug, Subcommand)]
@@ -68,6 +73,13 @@ pub enum SearchCommands {
         #[arg(long, default_value_t = 10)]
         limit: usize,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GraphCommands {
+    Query { sparql_file: PathBuf },
+    Neighbors { entity_id: String },
+    Collaborations { person_id: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -106,6 +118,31 @@ mod tests {
             cli.command,
             Commands::Search {
                 command: SearchCommands::Title { limit: 5, .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_graph_neighbors_command() {
+        let cli =
+            Cli::try_parse_from(["cinegraph", "graph", "neighbors", "nm0000001"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Graph {
+                command: GraphCommands::Neighbors { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_graph_query_command() {
+        let cli =
+            Cli::try_parse_from(["cinegraph", "graph", "query", "queries/directors.rq"])
+                .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Graph {
+                command: GraphCommands::Query { .. }
             }
         ));
     }

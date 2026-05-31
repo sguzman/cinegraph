@@ -6,4 +6,14 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+cinegraph-core = { path = "../cinegraph-core" }
+cinegraph-db = { path = "../cinegraph-db" }
+oxigraph.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true
+sqlx.workspace = true

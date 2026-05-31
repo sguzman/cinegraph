@@ -59,6 +59,10 @@ impl AppPaths {
         self.search_index_dir().join("people")
     }
 
+    pub fn graph_store_dir(&self) -> PathBuf {
+        self.root.join("graph").join("oxigraph")
+    }
+
     pub fn ensure_dirs(&self, config: &AppConfig) -> std::io::Result<()> {
         for path in [
             self.root.clone(),
@@ -86,7 +90,7 @@ mod tests {
     use super::*;
     use crate::config::{
         AppConfig, DataConfig, FetchConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-        SqliteConfig,
+        GraphConfig, SqliteConfig,
     };
     use tempfile::tempdir;
 
@@ -123,6 +127,9 @@ mod tests {
                     .join("logs/cinegraph.log")
                     .to_string_lossy()
                     .to_string(),
+            },
+            graph: GraphConfig {
+                base_iri: "https://cinegraph.local/".to_string(),
             },
             fetch: FetchConfig {
                 user_agent: "cinegraph-test".to_string(),

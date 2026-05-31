@@ -8,6 +8,7 @@ pub struct AppConfig {
     pub data: DataConfig,
     pub sqlite: SqliteConfig,
     pub logging: LoggingConfig,
+    pub graph: GraphConfig,
     pub fetch: FetchConfig,
     pub sources: SourcesConfig,
 }
@@ -28,6 +29,11 @@ pub struct LoggingConfig {
     pub level: String,
     pub format: String,
     pub file: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphConfig {
+    pub base_iri: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,6 +71,11 @@ impl AppConfig {
         if self.sources.imdb.datasets.is_empty() {
             return Err(CinegraphError::Config(
                 "sources.imdb.datasets must not be empty".to_string(),
+            ));
+        }
+        if !self.graph.base_iri.ends_with('/') {
+            return Err(CinegraphError::Config(
+                "graph.base_iri must end with '/'".to_string(),
             ));
         }
         Ok(())

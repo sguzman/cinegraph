@@ -10,6 +10,9 @@ level = "info"
 format = "pretty"
 file = ".data/logs/cinegraph.log"
 
+[graph]
+base_iri = "https://cinegraph.local/"
+
 [fetch]
 user_agent = "cinegraph/0.1.0 academic-local-cache"
 connect_timeout_seconds = 30

@@ -18,6 +18,8 @@ pub enum CinegraphError {
     Toml(#[from] toml::de::Error),
     #[error("serialization error: {0}")]
     SerdeJson(#[from] serde_json::Error),
+    #[error("graph error: {0}")]
+    Graph(String),
     #[error("{0}")]
     Other(String),
 }

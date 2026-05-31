@@ -154,7 +154,8 @@ impl Fetcher {
 mod tests {
     use super::*;
     use cinegraph_core::config::{
-        DataConfig, FetchConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig, SqliteConfig,
+        DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
+        SqliteConfig,
     };
     use httpmock::{Method::GET, MockServer};
     use tempfile::tempdir;
@@ -198,6 +199,9 @@ mod tests {
                     .join("logs/cinegraph.log")
                     .to_string_lossy()
                     .to_string(),
+            },
+            graph: GraphConfig {
+                base_iri: "https://cinegraph.local/".to_string(),
             },
             fetch: FetchConfig {
                 user_agent: "cinegraph-test".to_string(),

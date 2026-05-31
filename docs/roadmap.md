@@ -6,7 +6,7 @@ Last reviewed: 2026-05-30
 
 - [x] Milestone 1: IMDb-only SQLite warehouse
 - [x] Milestone 2: Full-text search
-- [ ] Milestone 3: Graph projection
+- [x] Milestone 3: Graph projection
 - [ ] Milestone 4: TMDb enrichment
 - [ ] Milestone 5: Wikidata enrichment
 
@@ -54,14 +54,14 @@ Last reviewed: 2026-05-30
 
 ## Milestone 3: Graph Projection
 
-- [ ] Add the `cinegraph-graph` implementation crate
-- [ ] Implement `cinegraph index graph`
-- [ ] Implement `cinegraph graph query <sparql-file>`
-- [ ] Implement `cinegraph graph neighbors <entity-id>`
-- [ ] Implement `cinegraph graph collaborations <person-id>`
-- [ ] Project RDF triples from SQLite instead of raw TSVs
-- [ ] Use Oxigraph as a reproducible derived store, not the source of truth
-- [ ] Add graph projection and SPARQL tests
+- [x] Add the `cinegraph-graph` implementation crate
+- [x] Implement `cinegraph index graph`
+- [x] Implement `cinegraph graph query <sparql-file>`
+- [x] Implement `cinegraph graph neighbors <entity-id>`
+- [x] Implement `cinegraph graph collaborations <person-id>`
+- [x] Project RDF triples from SQLite instead of raw TSVs
+- [x] Use Oxigraph as a reproducible derived store, not the source of truth
+- [x] Add graph projection and SPARQL tests
 
 ## Milestone 4: TMDb Enrichment
 
