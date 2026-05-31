@@ -31,7 +31,8 @@ impl<'a> ImdbImporter<'a> {
     }
 
     pub async fn import_latest(&self) -> Result<Vec<(String, ImportStats)>> {
-        let artifacts = queries::latest_artifacts_for_source(self.db.pool(), "imdb").await?;
+        let mut artifacts = queries::latest_artifacts_for_source(self.db.pool(), "imdb").await?;
+        artifacts.sort_by_key(|(dataset_name, _)| dataset_priority(dataset_name));
         let mut results = Vec::new();
         for (dataset_name, artifact) in artifacts {
             let stats = self.import_artifact(&dataset_name, &artifact).await?;
@@ -362,9 +363,22 @@ fn parse_f64(value: Option<&str>) -> Option<f64> {
     value.and_then(|item| item.parse::<f64>().ok())
 }
 
+fn dataset_priority(dataset_name: &str) -> usize {
+    match dataset_name {
+        "name.basics.tsv.gz" => 0,
+        "title.basics.tsv.gz" => 1,
+        "title.ratings.tsv.gz" => 2,
+        "title.akas.tsv.gz" => 3,
+        "title.crew.tsv.gz" => 4,
+        "title.principals.tsv.gz" => 5,
+        "title.episode.tsv.gz" => 6,
+        _ => usize::MAX,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{ImdbImporter, parse_i64};
+    use super::{ImdbImporter, dataset_priority, parse_i64};
     use crate::IMPORTER_VERSION;
     use cinegraph_core::{
         AppConfig, AppPaths,
@@ -382,6 +396,15 @@ mod tests {
         assert_eq!(parse_i64(Some("42")), Some(42));
         assert_eq!(parse_i64(Some("bad")), None);
         assert_eq!(parse_i64(None), None);
+    }
+
+    #[test]
+    fn dataset_priority_matches_import_dependencies() {
+        assert!(
+            dataset_priority("name.basics.tsv.gz") < dataset_priority("title.principals.tsv.gz")
+        );
+        assert!(dataset_priority("title.basics.tsv.gz") < dataset_priority("title.ratings.tsv.gz"));
+        assert!(dataset_priority("title.basics.tsv.gz") < dataset_priority("title.crew.tsv.gz"));
     }
 
     #[tokio::test]
@@ -514,6 +537,118 @@ mod tests {
                 .await
                 .expect("count");
         assert_eq!(import_runs.0, 2);
+    }
+
+    #[tokio::test]
+    async fn import_latest_respects_foreign_key_order() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path().join(".data");
+        let config = AppConfig {
+            data: DataConfig {
+                root: root.to_string_lossy().to_string(),
+            },
+            sqlite: SqliteConfig {
+                path: root
+                    .join("db/cinegraph.sqlite")
+                    .to_string_lossy()
+                    .to_string(),
+                max_connections: 1,
+            },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+                format: "pretty".to_string(),
+                file: root
+                    .join("logs/cinegraph.log")
+                    .to_string_lossy()
+                    .to_string(),
+            },
+            fetch: FetchConfig {
+                user_agent: "cinegraph-test".to_string(),
+                connect_timeout_seconds: 5,
+                request_timeout_seconds: 5,
+                retries: 1,
+            },
+            sources: SourcesConfig {
+                imdb: ImdbSourceConfig {
+                    enabled: true,
+                    base_url: "http://localhost/".to_string(),
+                    datasets: vec![
+                        "title.principals.tsv.gz".to_string(),
+                        "title.basics.tsv.gz".to_string(),
+                        "name.basics.tsv.gz".to_string(),
+                    ],
+                },
+            },
+        };
+        let paths = AppPaths::from_config(&config);
+        paths.ensure_dirs(&config).expect("dirs");
+        let db = Database::connect(&config, &paths).await.expect("connect");
+        db.migrate().await.expect("migrate");
+
+        let names_path = write_gzip_fixture(
+            &paths.raw_source_dir("imdb").join("name.basics.tsv.gz"),
+            "nconst\tprimaryName\tbirthYear\tdeathYear\tprimaryProfession\tknownForTitles\nnm0000001\tFred Astaire\t1899\t1987\tactor,soundtrack,producer\ttt0000001\n",
+        );
+        let titles_path = write_gzip_fixture(
+            &paths.raw_source_dir("imdb").join("title.basics.tsv.gz"),
+            "tconst\ttitleType\tprimaryTitle\toriginalTitle\tisAdult\tstartYear\tendYear\truntimeMinutes\tgenres\ntt0000001\tshort\tCarmencita\tCarmencita\t0\t1894\t\\N\t1\tDocumentary,Short\n",
+        );
+        let principals_path = write_gzip_fixture(
+            &paths.raw_source_dir("imdb").join("title.principals.tsv.gz"),
+            "tconst\tordering\tnconst\tcategory\tjob\tcharacters\ntt0000001\t1\tnm0000001\tactor\t\\N\t[\"Carmencita\"]\n",
+        );
+
+        for (dataset_name, path, hash) in [
+            (
+                "title.principals.tsv.gz",
+                principals_path.as_path(),
+                "hash-principals",
+            ),
+            ("title.basics.tsv.gz", titles_path.as_path(), "hash-titles"),
+            ("name.basics.tsv.gz", names_path.as_path(), "hash-people"),
+        ] {
+            let dataset = queries::upsert_dataset(
+                db.pool(),
+                "imdb",
+                dataset_name,
+                &format!("http://localhost/{dataset_name}"),
+            )
+            .await
+            .expect("dataset");
+            queries::insert_artifact(
+                db.pool(),
+                dataset.id,
+                &format!("http://localhost/{dataset_name}"),
+                &path.to_string_lossy(),
+                hash,
+                1,
+                None,
+                None,
+            )
+            .await
+            .expect("artifact");
+        }
+
+        let importer = ImdbImporter::new(&db);
+        let results = importer.import_latest().await.expect("import latest");
+
+        assert_eq!(
+            results
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "name.basics.tsv.gz",
+                "title.basics.tsv.gz",
+                "title.principals.tsv.gz",
+            ]
+        );
+
+        let credits_count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM credits")
+            .fetch_one(db.pool())
+            .await
+            .expect("count credits");
+        assert_eq!(credits_count.0, 1);
     }
 
     fn write_gzip_fixture(path: &Path, body: &str) -> std::path::PathBuf {
