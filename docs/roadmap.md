@@ -7,7 +7,7 @@ Last reviewed: 2026-05-30
 - [x] Milestone 1: IMDb-only SQLite warehouse
 - [x] Milestone 2: Full-text search
 - [x] Milestone 3: Graph projection
-- [ ] Milestone 4: TMDb enrichment
+- [x] Milestone 4: TMDb enrichment
 - [ ] Milestone 5: Wikidata enrichment
 
 ## Milestone 1: IMDb-only SQLite warehouse
@@ -65,10 +65,17 @@ Last reviewed: 2026-05-30
 
 ## Milestone 4: TMDb Enrichment
 
-- [ ] Add TMDb fetch and import support
-- [ ] Model TMDb as API-hydrated enrichment rather than bulk truth
-- [ ] Add rate-limited hydration of movie and credit data
-- [ ] Add SQLite crosswalk/enrichment coverage and tests
+- [x] Add the `cinegraph-tmdb` implementation crate
+- [x] Implement `cinegraph fetch tmdb`
+- [x] Implement `cinegraph import tmdb`
+- [x] Fetch TMDb daily movie ID exports into the content-addressed artifact cache
+- [x] Model TMDb as API-hydrated enrichment rather than bulk truth
+- [x] Import TMDb export rows into SQLite as a hydration queue keyed by artifact
+- [x] Hydrate TMDb movie details, external IDs, cast, and crew through the TMDb API
+- [x] Apply request throttling for TMDb hydration runs
+- [x] Store TMDb movie, person, credit, and title crosswalk enrichment in SQLite
+- [x] Reuse import-run metadata so the same TMDb export artifact is not re-imported twice with the same importer version
+- [x] Add TMDb export, hydration, and SQLite enrichment coverage in tests
 
 ## Milestone 5: Wikidata Enrichment
 

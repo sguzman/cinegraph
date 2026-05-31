@@ -7,6 +7,7 @@ use cinegraph_fetch::Fetcher;
 use cinegraph_graph::GraphService;
 use cinegraph_imdb::import::ImdbImporter;
 use cinegraph_search::SearchService;
+use cinegraph_tmdb::TmdbImporter;
 use clap::Parser;
 use tracing::info;
 
@@ -76,6 +77,21 @@ async fn run_command(
                     );
                 }
             }
+            FetchCommands::Tmdb => {
+                let fetcher = Fetcher::new(config)?;
+                for outcome in fetcher.fetch_tmdb(db, config, paths).await? {
+                    println!(
+                        "{}\t{}\t{}",
+                        outcome.dataset_name,
+                        if outcome.changed {
+                            "fetched"
+                        } else {
+                            "not-modified"
+                        },
+                        outcome.artifact.sha256
+                    );
+                }
+            }
         },
         Commands::Import { command } => match command {
             ImportCommands::Imdb => {
@@ -86,6 +102,11 @@ async fn run_command(
                         dataset, stats.rows_seen, stats.rows_inserted, stats.rows_skipped
                     );
                 }
+            }
+            ImportCommands::Tmdb => {
+                let importer = TmdbImporter::new(db, config)?;
+                let stats = importer.import_latest(config).await?;
+                println!("{}", serde_json::to_string_pretty(&stats)?);
             }
         },
         Commands::Stats => {

@@ -48,11 +48,13 @@ pub enum Commands {
 #[derive(Debug, Subcommand)]
 pub enum FetchCommands {
     Imdb,
+    Tmdb,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum ImportCommands {
     Imdb,
+    Tmdb,
 }
 
 #[derive(Debug, Subcommand)]
@@ -143,6 +145,17 @@ mod tests {
             cli.command,
             Commands::Graph {
                 command: GraphCommands::Query { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_fetch_tmdb_command() {
+        let cli = Cli::try_parse_from(["cinegraph", "fetch", "tmdb"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Fetch {
+                command: FetchCommands::Tmdb
             }
         ));
     }

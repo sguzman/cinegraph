@@ -47,6 +47,7 @@ pub struct FetchConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourcesConfig {
     pub imdb: ImdbSourceConfig,
+    pub tmdb: TmdbSourceConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -54,6 +55,19 @@ pub struct ImdbSourceConfig {
     pub enabled: bool,
     pub base_url: String,
     pub datasets: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TmdbSourceConfig {
+    pub enabled: bool,
+    pub export_base_url: String,
+    pub api_base_url: String,
+    pub api_read_access_token: String,
+    pub language: String,
+    pub hydrate_limit_per_run: u32,
+    pub request_interval_ms: u64,
+    pub export_days_back: u32,
+    pub include_adult: bool,
 }
 
 impl AppConfig {
@@ -71,6 +85,14 @@ impl AppConfig {
         if self.sources.imdb.datasets.is_empty() {
             return Err(CinegraphError::Config(
                 "sources.imdb.datasets must not be empty".to_string(),
+            ));
+        }
+        if self.sources.tmdb.enabled
+            && (self.sources.tmdb.export_base_url.is_empty()
+                || self.sources.tmdb.api_base_url.is_empty())
+        {
+            return Err(CinegraphError::Config(
+                "sources.tmdb URLs must not be empty when TMDb is enabled".to_string(),
             ));
         }
         if !self.graph.base_iri.ends_with('/') {

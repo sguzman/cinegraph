@@ -68,6 +68,7 @@ impl AppPaths {
             self.root.clone(),
             self.raw_dir(),
             self.raw_source_dir("imdb"),
+            self.raw_source_dir("tmdb"),
             self.blobs_dir(),
             self.db_dir(),
             self.logs_dir(),
@@ -90,7 +91,7 @@ mod tests {
     use super::*;
     use crate::config::{
         AppConfig, DataConfig, FetchConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-        GraphConfig, SqliteConfig,
+        GraphConfig, SqliteConfig, TmdbSourceConfig,
     };
     use tempfile::tempdir;
 
@@ -143,12 +144,24 @@ mod tests {
                     base_url: "http://localhost/".to_string(),
                     datasets: vec!["name.basics.tsv.gz".to_string()],
                 },
+                tmdb: TmdbSourceConfig {
+                    enabled: false,
+                    export_base_url: "http://localhost/exports/".to_string(),
+                    api_base_url: "http://localhost/api".to_string(),
+                    api_read_access_token: String::new(),
+                    language: "en-US".to_string(),
+                    hydrate_limit_per_run: 10,
+                    request_interval_ms: 0,
+                    export_days_back: 2,
+                    include_adult: false,
+                },
             },
         };
         let paths = AppPaths::from_config(&config);
         paths.ensure_dirs(&config).expect("ensure dirs");
 
         assert!(paths.raw_source_dir("imdb").exists());
+        assert!(paths.raw_source_dir("tmdb").exists());
         assert!(paths.blobs_dir().exists());
         assert!(paths.db_dir().exists());
         assert!(paths.logs_dir().exists());

@@ -246,7 +246,7 @@ mod tests {
         AppConfig,
         config::{
             DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-            SqliteConfig,
+            SqliteConfig, TmdbSourceConfig,
         },
     };
     use tempfile::tempdir;
@@ -284,6 +284,17 @@ mod tests {
                         enabled: true,
                         base_url: "http://localhost/".to_string(),
                         datasets: vec!["title.basics.tsv.gz".to_string()],
+                    },
+                    tmdb: TmdbSourceConfig {
+                        enabled: false,
+                        export_base_url: "http://localhost/exports/".to_string(),
+                        api_base_url: "http://localhost/api".to_string(),
+                        api_read_access_token: String::new(),
+                        language: "en-US".to_string(),
+                        hydrate_limit_per_run: 10,
+                        request_interval_ms: 0,
+                        export_days_back: 2,
+                        include_adult: false,
                     },
                 },
             };

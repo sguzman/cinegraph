@@ -1,5 +1,6 @@
 use cinegraph_core::{AppConfig, AppPaths, Result};
 use cinegraph_db::{Database, models::DownloadArtifact, queries};
+use chrono::{Datelike, Duration, Utc};
 use futures_util::StreamExt;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
 use sha2::{Digest, Sha256};
@@ -39,14 +40,15 @@ impl Fetcher {
     pub async fn fetch_dataset(
         &self,
         db: &Database,
-        config: &AppConfig,
+        source: &str,
+        base_url: &str,
         paths: &AppPaths,
         dataset_name: &str,
     ) -> Result<FetchOutcome> {
-        let url = format!("{}{}", config.sources.imdb.base_url, dataset_name);
-        let dataset = queries::upsert_dataset(db.pool(), "imdb", dataset_name, &url).await?;
+        let url = format!("{base_url}{dataset_name}");
+        let dataset = queries::upsert_dataset(db.pool(), source, dataset_name, &url).await?;
         let previous = queries::last_artifact_for_dataset(db.pool(), dataset.id).await?;
-        let span = info_span!("fetch.http_request", url = %url);
+        let span = info_span!("fetch.http_request", source = %source, url = %url);
         let _guard = span.enter();
 
         let mut request = self.client.get(&url);
@@ -106,7 +108,7 @@ impl Fetcher {
             let _ = fs::remove_file(&temp_path).await;
         }
 
-        let friendly_path = paths.raw_source_dir("imdb").join(dataset_name);
+        let friendly_path = paths.raw_source_dir(source).join(dataset_name);
         fs::copy(&blob_path, &friendly_path).await?;
 
         let local_path = blob_path.to_string_lossy().to_string();
@@ -144,10 +146,67 @@ impl Fetcher {
     ) -> Result<Vec<FetchOutcome>> {
         let mut out = Vec::new();
         for dataset_name in &config.sources.imdb.datasets {
-            out.push(self.fetch_dataset(db, config, paths, dataset_name).await?);
+            out.push(
+                self.fetch_dataset(
+                    db,
+                    "imdb",
+                    &config.sources.imdb.base_url,
+                    paths,
+                    dataset_name,
+                )
+                .await?,
+            );
         }
         Ok(out)
     }
+
+    pub async fn fetch_tmdb(
+        &self,
+        db: &Database,
+        config: &AppConfig,
+        paths: &AppPaths,
+    ) -> Result<Vec<FetchOutcome>> {
+        let today = Utc::now().date_naive();
+        let candidates = tmdb_export_filenames(today, config.sources.tmdb.export_days_back);
+        let mut last_error = None;
+
+        for dataset_name in candidates {
+            match self
+                .fetch_dataset(
+                    db,
+                    "tmdb",
+                    &config.sources.tmdb.export_base_url,
+                    paths,
+                    &dataset_name,
+                )
+                .await
+            {
+                Ok(outcome) => return Ok(vec![outcome]),
+                Err(error) => {
+                    let message = error.to_string();
+                    if message.contains("404") {
+                        last_error = Some(error);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| {
+            cinegraph_core::CinegraphError::Other(
+                "no TMDb export artifact was available within the configured fallback window"
+                    .to_string(),
+            )
+        }))
+    }
+}
+
+pub fn tmdb_export_filenames(reference_date: chrono::NaiveDate, days_back: u32) -> Vec<String> {
+    (0..=days_back)
+        .map(|offset| reference_date - Duration::days(offset as i64))
+        .map(|date| format!("movie_ids_{:02}_{:02}_{:04}.json.gz", date.month(), date.day(), date.year()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -155,8 +214,9 @@ mod tests {
     use super::*;
     use cinegraph_core::config::{
         DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-        SqliteConfig,
+        SqliteConfig, TmdbSourceConfig,
     };
+    use chrono::NaiveDate;
     use httpmock::{Method::GET, MockServer};
     use tempfile::tempdir;
 
@@ -215,6 +275,17 @@ mod tests {
                     base_url: format!("{}/", server.base_url()),
                     datasets: vec!["name.basics.tsv.gz".to_string()],
                 },
+                tmdb: TmdbSourceConfig {
+                    enabled: false,
+                    export_base_url: "http://localhost/exports/".to_string(),
+                    api_base_url: "http://localhost/api".to_string(),
+                    api_read_access_token: String::new(),
+                    language: "en-US".to_string(),
+                    hydrate_limit_per_run: 25,
+                    request_interval_ms: 0,
+                    export_days_back: 2,
+                    include_adult: false,
+                },
             },
         };
         let paths = AppPaths::from_config(&config);
@@ -224,7 +295,13 @@ mod tests {
         let fetcher = Fetcher::new(&config).expect("fetcher");
 
         let first_outcome = fetcher
-            .fetch_dataset(&db, &config, &paths, "name.basics.tsv.gz")
+            .fetch_dataset(
+                &db,
+                "imdb",
+                &config.sources.imdb.base_url,
+                &paths,
+                "name.basics.tsv.gz",
+            )
             .await
             .expect("first fetch");
 
@@ -235,11 +312,18 @@ mod tests {
                     base_url: format!("{}/", second_server.base_url()),
                     datasets: config.sources.imdb.datasets.clone(),
                 },
+                tmdb: config.sources.tmdb.clone(),
             },
             ..config.clone()
         };
         let second_outcome = fetcher
-            .fetch_dataset(&db, &second_config, &paths, "name.basics.tsv.gz")
+            .fetch_dataset(
+                &db,
+                "imdb",
+                &second_config.sources.imdb.base_url,
+                &paths,
+                "name.basics.tsv.gz",
+            )
             .await
             .expect("second fetch");
 
@@ -256,5 +340,19 @@ mod tests {
         assert_eq!(artifact_count.0, 1);
         first.assert();
         second.assert();
+    }
+
+    #[test]
+    fn tmdb_export_filename_generation_is_most_recent_first() {
+        let date = NaiveDate::from_ymd_opt(2026, 5, 30).expect("date");
+        let names = tmdb_export_filenames(date, 2);
+        assert_eq!(
+            names,
+            vec![
+                "movie_ids_05_30_2026.json.gz",
+                "movie_ids_05_29_2026.json.gz",
+                "movie_ids_05_28_2026.json.gz"
+            ]
+        );
     }
 }

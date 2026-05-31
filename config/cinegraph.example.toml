@@ -31,3 +31,14 @@ datasets = [
   "title.principals.tsv.gz",
   "title.ratings.tsv.gz",
 ]
+
+[sources.tmdb]
+enabled = false
+export_base_url = "https://files.tmdb.org/p/exports/"
+api_base_url = "https://api.themoviedb.org/3"
+api_read_access_token = ""
+language = "en-US"
+hydrate_limit_per_run = 25
+request_interval_ms = 250
+export_days_back = 2
+include_adult = false

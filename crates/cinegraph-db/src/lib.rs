@@ -142,10 +142,71 @@ impl Database {
                 episode_number INTEGER
             );
 
+            CREATE TABLE IF NOT EXISTS tmdb_movie_exports (
+                id INTEGER PRIMARY KEY,
+                export_artifact_id INTEGER NOT NULL REFERENCES download_artifacts(id),
+                tmdb_movie_id INTEGER NOT NULL,
+                adult INTEGER NOT NULL DEFAULT 0,
+                original_title TEXT,
+                popularity REAL,
+                video INTEGER NOT NULL DEFAULT 0,
+                hydrate_status TEXT,
+                hydrate_attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                hydrated_at TEXT,
+                UNIQUE(export_artifact_id, tmdb_movie_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS tmdb_movies (
+                tmdb_movie_id INTEGER PRIMARY KEY,
+                imdb_id TEXT,
+                title TEXT NOT NULL,
+                original_title TEXT,
+                original_language TEXT,
+                overview TEXT,
+                release_date TEXT,
+                runtime_minutes INTEGER,
+                status TEXT,
+                popularity REAL,
+                vote_average REAL,
+                vote_count INTEGER,
+                raw_json TEXT NOT NULL,
+                hydrated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS tmdb_people (
+                tmdb_person_id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS tmdb_movie_credits (
+                id INTEGER PRIMARY KEY,
+                tmdb_movie_id INTEGER NOT NULL REFERENCES tmdb_movies(tmdb_movie_id),
+                tmdb_person_id INTEGER NOT NULL REFERENCES tmdb_people(tmdb_person_id),
+                credit_key TEXT NOT NULL,
+                cast_order INTEGER,
+                credit_kind TEXT NOT NULL,
+                department TEXT,
+                job TEXT,
+                character_name TEXT,
+                raw_json TEXT,
+                UNIQUE(tmdb_movie_id, credit_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS title_tmdb_links (
+                imdb_id TEXT PRIMARY KEY REFERENCES titles(imdb_id),
+                tmdb_movie_id INTEGER NOT NULL UNIQUE REFERENCES tmdb_movies(tmdb_movie_id),
+                linked_via TEXT NOT NULL DEFAULT 'tmdb_external_id',
+                linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE INDEX IF NOT EXISTS idx_titles_primary_title ON titles(primary_title);
             CREATE INDEX IF NOT EXISTS idx_people_primary_name ON people(primary_name);
             CREATE INDEX IF NOT EXISTS idx_credits_title ON credits(imdb_id);
             CREATE INDEX IF NOT EXISTS idx_credits_person ON credits(imdb_name_id);
+            CREATE INDEX IF NOT EXISTS idx_tmdb_exports_artifact ON tmdb_movie_exports(export_artifact_id);
+            CREATE INDEX IF NOT EXISTS idx_tmdb_exports_status ON tmdb_movie_exports(hydrate_status);
+            CREATE INDEX IF NOT EXISTS idx_tmdb_movies_imdb_id ON tmdb_movies(imdb_id);
             "#,
         )
         .execute(&self.pool)
@@ -161,6 +222,7 @@ mod tests {
         AppConfig,
         config::{
             DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
+            TmdbSourceConfig,
             SqliteConfig,
         },
     };
@@ -203,6 +265,17 @@ mod tests {
                     enabled: true,
                     base_url: "http://localhost/".to_string(),
                     datasets: vec!["name.basics.tsv.gz".to_string()],
+                },
+                tmdb: TmdbSourceConfig {
+                    enabled: false,
+                    export_base_url: "http://localhost/exports/".to_string(),
+                    api_base_url: "http://localhost/api".to_string(),
+                    api_read_access_token: String::new(),
+                    language: "en-US".to_string(),
+                    hydrate_limit_per_run: 10,
+                    request_interval_ms: 0,
+                    export_days_back: 2,
+                    include_adult: false,
                 },
             },
         };

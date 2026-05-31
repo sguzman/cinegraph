@@ -3,7 +3,7 @@ use sqlx::Row;
 
 use crate::models::{
     Dataset, DownloadArtifact, GraphCredit, GraphPerson, GraphTitle, IndexablePerson,
-    IndexableTitle, LookupPerson, LookupTitle,
+    IndexableTitle, LookupPerson, LookupTitle, PendingTmdbMovieHydration, TmdbMovieExportEntry,
 };
 
 pub async fn upsert_dataset(
@@ -201,6 +201,42 @@ pub async fn latest_artifacts_for_source(
         ));
     }
     Ok(out)
+}
+
+pub async fn latest_artifact_for_source(
+    pool: &sqlx::SqlitePool,
+    source: &str,
+) -> Result<Option<(String, DownloadArtifact)>> {
+    let row = sqlx::query(
+        r#"
+        SELECT d.dataset_name, a.id, a.dataset_id, a.url, a.local_path, a.sha256, a.byte_len, a.etag, a.last_modified, a.fetched_at
+        FROM datasets d
+        JOIN download_artifacts a ON a.dataset_id = d.id
+        WHERE d.source = ?
+        ORDER BY a.id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(source)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|row| {
+        (
+            row.get::<String, _>("dataset_name"),
+            DownloadArtifact {
+                id: row.get("id"),
+                dataset_id: row.get("dataset_id"),
+                url: row.get("url"),
+                local_path: row.get("local_path"),
+                sha256: row.get("sha256"),
+                byte_len: row.get("byte_len"),
+                etag: row.get("etag"),
+                last_modified: row.get("last_modified"),
+                fetched_at: row.get("fetched_at"),
+            },
+        )
+    }))
 }
 
 pub async fn lookup_title(pool: &sqlx::SqlitePool, query: &str) -> Result<Vec<LookupTitle>> {
@@ -401,6 +437,283 @@ pub async fn stats(pool: &sqlx::SqlitePool) -> Result<serde_json::Value> {
         "title_akas": count(pool, "title_akas").await?,
         "title_crew": count(pool, "title_crew").await?,
         "credits": count(pool, "credits").await?,
-        "episode_edges": count(pool, "episode_edges").await?
+        "episode_edges": count(pool, "episode_edges").await?,
+        "tmdb_movie_exports": count(pool, "tmdb_movie_exports").await?,
+        "tmdb_movies": count(pool, "tmdb_movies").await?,
+        "tmdb_people": count(pool, "tmdb_people").await?,
+        "tmdb_movie_credits": count(pool, "tmdb_movie_credits").await?,
+        "title_tmdb_links": count(pool, "title_tmdb_links").await?
     }))
+}
+
+pub async fn upsert_tmdb_movie_export(
+    pool: &sqlx::SqlitePool,
+    export_artifact_id: i64,
+    tmdb_movie_id: i64,
+    adult: bool,
+    original_title: Option<&str>,
+    popularity: Option<f64>,
+    video: bool,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO tmdb_movie_exports (export_artifact_id, tmdb_movie_id, adult, original_title, popularity, video)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(export_artifact_id, tmdb_movie_id) DO UPDATE SET
+            adult = excluded.adult,
+            original_title = excluded.original_title,
+            popularity = excluded.popularity,
+            video = excluded.video
+        "#,
+    )
+    .bind(export_artifact_id)
+    .bind(tmdb_movie_id)
+    .bind(if adult { 1 } else { 0 })
+    .bind(original_title)
+    .bind(popularity)
+    .bind(if video { 1 } else { 0 })
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn pending_tmdb_movie_hydrations(
+    pool: &sqlx::SqlitePool,
+    export_artifact_id: i64,
+    include_adult: bool,
+    limit: i64,
+) -> Result<Vec<PendingTmdbMovieHydration>> {
+    let rows = sqlx::query_as::<_, PendingTmdbMovieHydration>(
+        r#"
+        SELECT
+            e.export_artifact_id,
+            e.tmdb_movie_id,
+            e.original_title,
+            e.popularity
+        FROM tmdb_movie_exports e
+        LEFT JOIN tmdb_movies m ON m.tmdb_movie_id = e.tmdb_movie_id
+        WHERE e.export_artifact_id = ?
+          AND (? = 1 OR e.adult = 0)
+          AND m.tmdb_movie_id IS NULL
+        ORDER BY e.popularity DESC, e.tmdb_movie_id ASC
+        LIMIT ?
+        "#,
+    )
+    .bind(export_artifact_id)
+    .bind(if include_adult { 1 } else { 0 })
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn tmdb_movie_export_by_artifact_and_id(
+    pool: &sqlx::SqlitePool,
+    export_artifact_id: i64,
+    tmdb_movie_id: i64,
+) -> Result<Option<TmdbMovieExportEntry>> {
+    let row = sqlx::query_as::<_, TmdbMovieExportEntry>(
+        "SELECT * FROM tmdb_movie_exports WHERE export_artifact_id = ? AND tmdb_movie_id = ?",
+    )
+    .bind(export_artifact_id)
+    .bind(tmdb_movie_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn mark_tmdb_movie_hydrated(
+    pool: &sqlx::SqlitePool,
+    export_artifact_id: i64,
+    tmdb_movie_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE tmdb_movie_exports
+        SET hydrate_status = 'completed',
+            hydrate_attempts = hydrate_attempts + 1,
+            last_error = NULL,
+            hydrated_at = CURRENT_TIMESTAMP
+        WHERE export_artifact_id = ? AND tmdb_movie_id = ?
+        "#,
+    )
+    .bind(export_artifact_id)
+    .bind(tmdb_movie_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn mark_tmdb_movie_hydration_failed(
+    pool: &sqlx::SqlitePool,
+    export_artifact_id: i64,
+    tmdb_movie_id: i64,
+    error: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE tmdb_movie_exports
+        SET hydrate_status = 'failed',
+            hydrate_attempts = hydrate_attempts + 1,
+            last_error = ?
+        WHERE export_artifact_id = ? AND tmdb_movie_id = ?
+        "#,
+    )
+    .bind(error)
+    .bind(export_artifact_id)
+    .bind(tmdb_movie_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn upsert_tmdb_movie(
+    pool: &sqlx::SqlitePool,
+    tmdb_movie_id: i64,
+    imdb_id: Option<&str>,
+    title: &str,
+    original_title: Option<&str>,
+    original_language: Option<&str>,
+    overview: Option<&str>,
+    release_date: Option<&str>,
+    runtime_minutes: Option<i64>,
+    status: Option<&str>,
+    popularity: Option<f64>,
+    vote_average: Option<f64>,
+    vote_count: Option<i64>,
+    raw_json: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO tmdb_movies (
+            tmdb_movie_id, imdb_id, title, original_title, original_language, overview,
+            release_date, runtime_minutes, status, popularity, vote_average, vote_count, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tmdb_movie_id) DO UPDATE SET
+            imdb_id = excluded.imdb_id,
+            title = excluded.title,
+            original_title = excluded.original_title,
+            original_language = excluded.original_language,
+            overview = excluded.overview,
+            release_date = excluded.release_date,
+            runtime_minutes = excluded.runtime_minutes,
+            status = excluded.status,
+            popularity = excluded.popularity,
+            vote_average = excluded.vote_average,
+            vote_count = excluded.vote_count,
+            raw_json = excluded.raw_json,
+            hydrated_at = CURRENT_TIMESTAMP
+        "#,
+    )
+    .bind(tmdb_movie_id)
+    .bind(imdb_id)
+    .bind(title)
+    .bind(original_title)
+    .bind(original_language)
+    .bind(overview)
+    .bind(release_date)
+    .bind(runtime_minutes)
+    .bind(status)
+    .bind(popularity)
+    .bind(vote_average)
+    .bind(vote_count)
+    .bind(raw_json)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn upsert_tmdb_person(
+    pool: &sqlx::SqlitePool,
+    tmdb_person_id: i64,
+    name: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO tmdb_people (tmdb_person_id, name)
+        VALUES (?, ?)
+        ON CONFLICT(tmdb_person_id) DO UPDATE SET name = excluded.name
+        "#,
+    )
+    .bind(tmdb_person_id)
+    .bind(name)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn replace_tmdb_movie_credit(
+    pool: &sqlx::SqlitePool,
+    tmdb_movie_id: i64,
+    tmdb_person_id: i64,
+    credit_key: &str,
+    cast_order: Option<i64>,
+    credit_kind: &str,
+    department: Option<&str>,
+    job: Option<&str>,
+    character_name: Option<&str>,
+    raw_json: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO tmdb_movie_credits (
+            tmdb_movie_id, tmdb_person_id, credit_key, cast_order, credit_kind, department, job, character_name, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(tmdb_movie_id, credit_key) DO UPDATE SET
+            tmdb_person_id = excluded.tmdb_person_id,
+            cast_order = excluded.cast_order,
+            credit_kind = excluded.credit_kind,
+            department = excluded.department,
+            job = excluded.job,
+            character_name = excluded.character_name,
+            raw_json = excluded.raw_json
+        "#,
+    )
+    .bind(tmdb_movie_id)
+    .bind(tmdb_person_id)
+    .bind(credit_key)
+    .bind(cast_order)
+    .bind(credit_kind)
+    .bind(department)
+    .bind(job)
+    .bind(character_name)
+    .bind(raw_json)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn clear_tmdb_movie_credits(pool: &sqlx::SqlitePool, tmdb_movie_id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM tmdb_movie_credits WHERE tmdb_movie_id = ?")
+        .bind(tmdb_movie_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn link_title_to_tmdb_movie(
+    pool: &sqlx::SqlitePool,
+    imdb_id: &str,
+    tmdb_movie_id: i64,
+) -> Result<bool> {
+    let result = sqlx::query(
+        r#"
+        INSERT INTO title_tmdb_links (imdb_id, tmdb_movie_id, linked_via)
+        VALUES (?, ?, 'tmdb_external_id')
+        ON CONFLICT(imdb_id) DO UPDATE SET tmdb_movie_id = excluded.tmdb_movie_id, linked_at = CURRENT_TIMESTAMP
+        "#,
+    )
+    .bind(imdb_id)
+    .bind(tmdb_movie_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() >= 1)
+}
+
+pub async fn title_exists(pool: &sqlx::SqlitePool, imdb_id: &str) -> Result<bool> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT imdb_id FROM titles WHERE imdb_id = ?")
+        .bind(imdb_id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row.is_some())
 }

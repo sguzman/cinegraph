@@ -93,3 +93,26 @@ pub struct GraphCredit {
     pub job: Option<String>,
     pub characters: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct TmdbMovieExportEntry {
+    pub id: i64,
+    pub export_artifact_id: i64,
+    pub tmdb_movie_id: i64,
+    pub adult: i64,
+    pub original_title: Option<String>,
+    pub popularity: Option<f64>,
+    pub video: i64,
+    pub hydrate_status: Option<String>,
+    pub hydrate_attempts: i64,
+    pub last_error: Option<String>,
+    pub hydrated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct PendingTmdbMovieHydration {
+    pub export_artifact_id: i64,
+    pub tmdb_movie_id: i64,
+    pub original_title: Option<String>,
+    pub popularity: Option<f64>,
+}
