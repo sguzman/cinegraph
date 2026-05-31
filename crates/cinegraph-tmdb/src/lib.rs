@@ -39,9 +39,9 @@ impl<'a> TmdbImporter<'a> {
             let value = format!("Bearer {}", config.sources.tmdb.api_read_access_token);
             headers.insert(
                 header::AUTHORIZATION,
-                value
-                    .parse()
-                    .map_err(|error| CinegraphError::Other(format!("invalid TMDb token header: {error}")))?,
+                value.parse().map_err(|error| {
+                    CinegraphError::Other(format!("invalid TMDb token header: {error}"))
+                })?,
             );
         }
 
@@ -56,7 +56,9 @@ impl<'a> TmdbImporter<'a> {
     }
 
     pub async fn import_latest(&self, config: &AppConfig) -> Result<TmdbImportStats> {
-        let Some((_, artifact)) = queries::latest_artifact_for_source(self.db.pool(), "tmdb").await? else {
+        let Some((_, artifact)) =
+            queries::latest_artifact_for_source(self.db.pool(), "tmdb").await?
+        else {
             return Err(CinegraphError::Other(
                 "no TMDb export artifact found; run `cinegraph fetch tmdb` first".to_string(),
             ));
@@ -126,7 +128,11 @@ impl<'a> TmdbImporter<'a> {
         }
     }
 
-    async fn import_export_rows(&self, export_artifact_id: i64, path: &Path) -> Result<TmdbImportStats> {
+    async fn import_export_rows(
+        &self,
+        export_artifact_id: i64,
+        path: &Path,
+    ) -> Result<TmdbImportStats> {
         let reader = BufReader::new(MultiGzDecoder::new(File::open(path)?));
 
         let mut stats = TmdbImportStats::default();
@@ -165,7 +171,8 @@ impl<'a> TmdbImporter<'a> {
     ) -> Result<TmdbImportStats> {
         if config.sources.tmdb.api_read_access_token.is_empty() {
             return Err(CinegraphError::Config(
-                "sources.tmdb.api_read_access_token must be set to import TMDb hydration".to_string(),
+                "sources.tmdb.api_read_access_token must be set to import TMDb hydration"
+                    .to_string(),
             ));
         }
 
@@ -205,9 +212,7 @@ impl<'a> TmdbImporter<'a> {
         config: &AppConfig,
         movie: &cinegraph_db::models::PendingTmdbMovieHydration,
     ) -> Result<TmdbImportStats> {
-        let response = self
-            .get_movie_details(config, movie.tmdb_movie_id)
-            .await?;
+        let response = self.get_movie_details(config, movie.tmdb_movie_id).await?;
 
         let raw_json = serde_json::to_string(&response)?;
         queries::upsert_tmdb_movie(
@@ -245,7 +250,12 @@ impl<'a> TmdbImporter<'a> {
                     self.db.pool(),
                     response.id,
                     cast.id,
-                    &format!("cast:{}:{}:{}", cast.id, cast.order.unwrap_or_default(), cast.character.clone().unwrap_or_default()),
+                    &format!(
+                        "cast:{}:{}:{}",
+                        cast.id,
+                        cast.order.unwrap_or_default(),
+                        cast.character.clone().unwrap_or_default()
+                    ),
                     cast.order,
                     "cast",
                     cast.known_for_department.as_deref(),
@@ -263,7 +273,12 @@ impl<'a> TmdbImporter<'a> {
                     self.db.pool(),
                     response.id,
                     crew.id,
-                    &format!("crew:{}:{}:{}", crew.id, crew.department.clone().unwrap_or_default(), crew.job.clone().unwrap_or_default()),
+                    &format!(
+                        "crew:{}:{}:{}",
+                        crew.id,
+                        crew.department.clone().unwrap_or_default(),
+                        crew.job.clone().unwrap_or_default()
+                    ),
                     None,
                     "crew",
                     crew.department.as_deref(),
@@ -289,10 +304,18 @@ impl<'a> TmdbImporter<'a> {
             }
         }
 
-        queries::mark_tmdb_movie_hydrated(self.db.pool(), movie.export_artifact_id, movie.tmdb_movie_id).await?;
+        queries::mark_tmdb_movie_hydrated(
+            self.db.pool(),
+            movie.export_artifact_id,
+            movie.tmdb_movie_id,
+        )
+        .await?;
 
         if config.sources.tmdb.request_interval_ms > 0 {
-            sleep(Duration::from_millis(config.sources.tmdb.request_interval_ms)).await;
+            sleep(Duration::from_millis(
+                config.sources.tmdb.request_interval_ms,
+            ))
+            .await;
         }
 
         Ok(stats)
@@ -401,7 +424,7 @@ mod tests {
         AppPaths,
         config::{
             DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-            SqliteConfig, TmdbSourceConfig,
+            SqliteConfig, TmdbSourceConfig, WikidataSourceConfig,
         },
     };
     use httpmock::{Method::GET, MockServer};
@@ -448,13 +471,19 @@ mod tests {
                 root: root.to_string_lossy().to_string(),
             },
             sqlite: SqliteConfig {
-                path: root.join("db/cinegraph.sqlite").to_string_lossy().to_string(),
+                path: root
+                    .join("db/cinegraph.sqlite")
+                    .to_string_lossy()
+                    .to_string(),
                 max_connections: 1,
             },
             logging: LoggingConfig {
                 level: "info".to_string(),
                 format: "pretty".to_string(),
-                file: root.join("logs/cinegraph.log").to_string_lossy().to_string(),
+                file: root
+                    .join("logs/cinegraph.log")
+                    .to_string_lossy()
+                    .to_string(),
             },
             graph: GraphConfig {
                 base_iri: "https://cinegraph.local/".to_string(),
@@ -482,6 +511,11 @@ mod tests {
                     export_days_back: 2,
                     include_adult: false,
                 },
+                wikidata: WikidataSourceConfig {
+                    enabled: false,
+                    dump_path: String::new(),
+                    language: "en".to_string(),
+                },
             },
         };
         let paths = AppPaths::from_config(&config);
@@ -493,9 +527,12 @@ mod tests {
             .await
             .expect("seed title");
 
-        let export_path = paths.raw_source_dir("tmdb").join("movie_ids_05_30_2026.json.gz");
+        let export_path = paths
+            .raw_source_dir("tmdb")
+            .join("movie_ids_05_30_2026.json.gz");
         let export_file = File::create(&export_path).expect("export file");
-        let mut encoder = flate2::write::GzEncoder::new(export_file, flate2::Compression::default());
+        let mut encoder =
+            flate2::write::GzEncoder::new(export_file, flate2::Compression::default());
         encoder
             .write_all(br#"{"id":11,"adult":false,"original_title":"Seven Samurai","popularity":22.5,"video":false}"#)
             .expect("write export");
@@ -530,13 +567,17 @@ mod tests {
         assert_eq!(stats.credits_imported, 2);
         assert_eq!(stats.title_links_created, 1);
 
-        let linked: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM title_tmdb_links WHERE imdb_id = 'tt0047478'")
-            .fetch_one(db.pool())
-            .await
-            .expect("link count");
+        let linked: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM title_tmdb_links WHERE imdb_id = 'tt0047478'")
+                .fetch_one(db.pool())
+                .await
+                .expect("link count");
         assert_eq!(linked.0, 1);
 
-        let second = importer.import_latest(&config).await.expect("repeat import");
+        let second = importer
+            .import_latest(&config)
+            .await
+            .expect("repeat import");
         assert_eq!(second.movies_hydrated, 0);
         movie.assert_hits(1);
 

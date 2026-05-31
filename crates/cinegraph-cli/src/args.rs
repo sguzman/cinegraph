@@ -55,6 +55,7 @@ pub enum FetchCommands {
 pub enum ImportCommands {
     Imdb,
     Tmdb,
+    Wikidata,
 }
 
 #[derive(Debug, Subcommand)]
@@ -138,9 +139,8 @@ mod tests {
 
     #[test]
     fn parses_graph_query_command() {
-        let cli =
-            Cli::try_parse_from(["cinegraph", "graph", "query", "queries/directors.rq"])
-                .expect("parse");
+        let cli = Cli::try_parse_from(["cinegraph", "graph", "query", "queries/directors.rq"])
+            .expect("parse");
         assert!(matches!(
             cli.command,
             Commands::Graph {
@@ -156,6 +156,17 @@ mod tests {
             cli.command,
             Commands::Fetch {
                 command: FetchCommands::Tmdb
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_import_wikidata_command() {
+        let cli = Cli::try_parse_from(["cinegraph", "import", "wikidata"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Import {
+                command: ImportCommands::Wikidata
             }
         ));
     }

@@ -88,7 +88,12 @@ impl SearchService {
 
         Ok(hits
             .into_iter()
-            .filter_map(|(score, id)| by_id.get(&id).cloned().map(|record| SearchHit { score, record }))
+            .filter_map(|(score, id)| {
+                by_id
+                    .get(&id)
+                    .cloned()
+                    .map(|record| SearchHit { score, record })
+            })
             .collect())
     }
 
@@ -108,7 +113,12 @@ impl SearchService {
 
         Ok(hits
             .into_iter()
-            .filter_map(|(score, id)| by_id.get(&id).cloned().map(|record| SearchHit { score, record }))
+            .filter_map(|(score, id)| {
+                by_id
+                    .get(&id)
+                    .cloned()
+                    .map(|record| SearchHit { score, record })
+            })
             .collect())
     }
 
@@ -125,7 +135,8 @@ impl SearchService {
             .try_into()
             .map_err(tantivy_error)?;
         let searcher = reader.searcher();
-        let parser = QueryParser::for_index(index, vec![schema.name, schema.alt_name, schema.context]);
+        let parser =
+            QueryParser::for_index(index, vec![schema.name, schema.alt_name, schema.context]);
         let parsed = parser.parse_query(query).map_err(tantivy_error)?;
         let docs = searcher
             .search(&parsed, &TopDocs::with_limit(limit))
@@ -246,7 +257,7 @@ mod tests {
         AppConfig,
         config::{
             DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-            SqliteConfig, TmdbSourceConfig,
+            SqliteConfig, TmdbSourceConfig, WikidataSourceConfig,
         },
     };
     use tempfile::tempdir;
@@ -295,6 +306,11 @@ mod tests {
                         request_interval_ms: 0,
                         export_days_back: 2,
                         include_adult: false,
+                    },
+                    wikidata: WikidataSourceConfig {
+                        enabled: false,
+                        dump_path: String::new(),
+                        language: "en".to_string(),
                     },
                 },
             };

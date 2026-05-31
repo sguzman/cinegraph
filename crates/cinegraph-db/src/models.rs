@@ -116,3 +116,25 @@ pub struct PendingTmdbMovieHydration {
     pub original_title: Option<String>,
     pub popularity: Option<f64>,
 }
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct GraphWikidataLink {
+    pub entity_kind: String,
+    pub local_id: String,
+    pub local_name: String,
+    pub wikidata_id: String,
+    pub wikidata_label: Option<String>,
+    pub wikidata_description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct GraphWikidataClaim {
+    pub entity_kind: String,
+    pub local_id: String,
+    pub subject_wikidata_id: String,
+    pub property_id: String,
+    pub value_type: String,
+    pub value_text: Option<String>,
+    pub value_wikidata_id: Option<String>,
+    pub value_wikidata_label: Option<String>,
+}

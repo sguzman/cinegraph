@@ -1,6 +1,6 @@
 # Cinegraph Roadmap
 
-Last reviewed: 2026-05-30
+Last reviewed: 2026-05-31
 
 ## Status
 
@@ -8,7 +8,7 @@ Last reviewed: 2026-05-30
 - [x] Milestone 2: Full-text search
 - [x] Milestone 3: Graph projection
 - [x] Milestone 4: TMDb enrichment
-- [ ] Milestone 5: Wikidata enrichment
+- [x] Milestone 5: Wikidata enrichment
 
 ## Milestone 1: IMDb-only SQLite warehouse
 
@@ -79,10 +79,14 @@ Last reviewed: 2026-05-30
 
 ## Milestone 5: Wikidata Enrichment
 
-- [ ] Add Wikidata import support
-- [ ] Add title/person crosswalk enrichment into SQLite
-- [ ] Extend graph projection with Wikidata-linked entities and facts
-- [ ] Add tests for imported links and projected graph data
+- [x] Add the `cinegraph-wikidata` implementation crate
+- [x] Implement `cinegraph import wikidata`
+- [x] Import Wikidata from a user-provided local dump path instead of downloading it
+- [x] Track local Wikidata dump artifacts by SHA-256 for idempotent import runs
+- [x] Add title/person crosswalk enrichment into SQLite
+- [x] Store selected Wikidata entity labels, descriptions, and claims in SQLite
+- [x] Extend graph projection with Wikidata-linked entities and facts
+- [x] Add tests for imported links and projected graph data
 
 ## Progress Rule
 

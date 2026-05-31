@@ -384,7 +384,7 @@ mod tests {
         AppConfig, AppPaths,
         config::{
             DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-            SqliteConfig, TmdbSourceConfig,
+            SqliteConfig, TmdbSourceConfig, WikidataSourceConfig,
         },
     };
     use cinegraph_db::{Database, queries};
@@ -459,6 +459,11 @@ mod tests {
                     request_interval_ms: 0,
                     export_days_back: 2,
                     include_adult: false,
+                },
+                wikidata: WikidataSourceConfig {
+                    enabled: false,
+                    dump_path: String::new(),
+                    language: "en".to_string(),
                 },
             },
         };
@@ -606,6 +611,11 @@ mod tests {
                     request_interval_ms: 0,
                     export_days_back: 2,
                     include_adult: false,
+                },
+                wikidata: WikidataSourceConfig {
+                    enabled: false,
+                    dump_path: String::new(),
+                    language: "en".to_string(),
                 },
             },
         };

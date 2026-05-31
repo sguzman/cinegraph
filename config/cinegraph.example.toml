@@ -42,3 +42,8 @@ hydrate_limit_per_run = 25
 request_interval_ms = 250
 export_days_back = 2
 include_adult = false
+
+[sources.wikidata]
+enabled = false
+dump_path = "/path/to/latest-all.json.gz"
+language = "en"

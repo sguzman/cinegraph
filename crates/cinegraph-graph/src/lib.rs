@@ -16,12 +16,17 @@ const SCHEMA_MOVIE: &str = "https://schema.org/Movie";
 const SCHEMA_DIRECTOR: &str = "https://schema.org/director";
 const SCHEMA_ACTOR: &str = "https://schema.org/actor";
 const SCHEMA_DATE_PUBLISHED: &str = "https://schema.org/datePublished";
+const SCHEMA_SAME_AS: &str = "https://schema.org/sameAs";
+const WIKIDATA_ENTITY_BASE: &str = "https://www.wikidata.org/entity/";
+const WIKIDATA_PROPERTY_BASE: &str = "https://www.wikidata.org/prop/direct/";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct GraphBuildStats {
     pub titles_projected: usize,
     pub people_projected: usize,
     pub credits_projected: usize,
+    pub wikidata_links_projected: usize,
+    pub wikidata_claims_projected: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +80,8 @@ impl GraphService {
         let title_rows = queries::titles_for_graph(db.pool()).await?;
         let person_rows = queries::people_for_graph(db.pool()).await?;
         let credit_rows = queries::credits_for_graph(db.pool()).await?;
+        let wikidata_links = queries::wikidata_links_for_graph(db.pool()).await?;
+        let wikidata_claims = queries::wikidata_claims_for_graph(db.pool()).await?;
 
         for title in &title_rows {
             let title_node = self.title_node(&title.imdb_id)?;
@@ -249,10 +256,57 @@ impl GraphService {
             }
         }
 
+        for link in &wikidata_links {
+            let local_node = self.local_node(&link.entity_kind, &link.local_id)?;
+            let wikidata_node = self.wikidata_node(&link.wikidata_id)?;
+            self.insert_quad(
+                local_node.into(),
+                named_node(SCHEMA_SAME_AS)?,
+                wikidata_node.clone().into(),
+            )?;
+            if let Some(label) = &link.wikidata_label {
+                self.insert_quad(
+                    wikidata_node.clone().into(),
+                    named_node(SCHEMA_NAME)?,
+                    Literal::new_simple_literal(label).into(),
+                )?;
+            }
+            if let Some(description) = &link.wikidata_description {
+                self.insert_quad(
+                    wikidata_node.into(),
+                    self.cine_predicate("description")?,
+                    Literal::new_simple_literal(description).into(),
+                )?;
+            }
+        }
+
+        for claim in &wikidata_claims {
+            let subject = self.local_node(&claim.entity_kind, &claim.local_id)?;
+            let predicate = self.wikidata_property_node(&claim.property_id)?;
+            let object = if let Some(wikidata_id) = &claim.value_wikidata_id {
+                let wikidata_node = self.wikidata_node(wikidata_id)?;
+                if let Some(label) = &claim.value_wikidata_label {
+                    self.insert_quad(
+                        wikidata_node.clone().into(),
+                        named_node(SCHEMA_NAME)?,
+                        Literal::new_simple_literal(label).into(),
+                    )?;
+                }
+                wikidata_node.into()
+            } else if let Some(text) = &claim.value_text {
+                Literal::new_simple_literal(text).into()
+            } else {
+                continue;
+            };
+            self.insert_quad(subject.into(), predicate, object)?;
+        }
+
         info!(
             titles_projected = title_rows.len(),
             people_projected = person_rows.len(),
             credits_projected = credit_rows.len(),
+            wikidata_links_projected = wikidata_links.len(),
+            wikidata_claims_projected = wikidata_claims.len(),
             "oxigraph graph rebuilt"
         );
 
@@ -260,6 +314,8 @@ impl GraphService {
             titles_projected: title_rows.len(),
             people_projected: person_rows.len(),
             credits_projected: credit_rows.len(),
+            wikidata_links_projected: wikidata_links.len(),
+            wikidata_claims_projected: wikidata_claims.len(),
         })
     }
 
@@ -282,18 +338,27 @@ impl GraphService {
                  BIND(\"out\" AS ?direction)
                  <{entity_iri}> ?predicate ?neighbor .
                  ?neighbor schema:name ?name .
-                 FILTER(STRSTARTS(STR(?neighbor), \"{base}title/\") || STRSTARTS(STR(?neighbor), \"{base}person/\"))
+                 FILTER(
+                   STRSTARTS(STR(?neighbor), \"{base}title/\")
+                   || STRSTARTS(STR(?neighbor), \"{base}person/\")
+                   || STRSTARTS(STR(?neighbor), \"{wikidata_base}\")
+                 )
                }}
                UNION
                {{
                  BIND(\"in\" AS ?direction)
                  ?neighbor ?predicate <{entity_iri}> .
                  ?neighbor schema:name ?name .
-                 FILTER(STRSTARTS(STR(?neighbor), \"{base}title/\") || STRSTARTS(STR(?neighbor), \"{base}person/\"))
+                 FILTER(
+                   STRSTARTS(STR(?neighbor), \"{base}title/\")
+                   || STRSTARTS(STR(?neighbor), \"{base}person/\")
+                   || STRSTARTS(STR(?neighbor), \"{wikidata_base}\")
+                 )
                }}
              }}
              ORDER BY ?direction ?predicate ?name",
-            base = self.base_iri
+            base = self.base_iri,
+            wikidata_base = WIKIDATA_ENTITY_BASE
         );
 
         let output = self.query(&query)?;
@@ -369,6 +434,24 @@ impl GraphService {
         named_node(&format!("{}person/{imdb_name_id}", self.base_iri))
     }
 
+    fn local_node(&self, entity_kind: &str, local_id: &str) -> Result<NamedNode> {
+        match entity_kind {
+            "title" => self.title_node(local_id),
+            "person" => self.person_node(local_id),
+            _ => Err(CinegraphError::Graph(format!(
+                "unsupported local entity kind: {entity_kind}"
+            ))),
+        }
+    }
+
+    fn wikidata_node(&self, wikidata_id: &str) -> Result<NamedNode> {
+        named_node(&format!("{WIKIDATA_ENTITY_BASE}{wikidata_id}"))
+    }
+
+    fn wikidata_property_node(&self, property_id: &str) -> Result<NamedNode> {
+        named_node(&format!("{WIKIDATA_PROPERTY_BASE}{property_id}"))
+    }
+
     fn credit_node(
         &self,
         imdb_id: &str,
@@ -388,7 +471,11 @@ impl GraphService {
     }
 
     fn entity_iri(&self, entity_id: &str) -> String {
-        if entity_id.starts_with("tt") {
+        if entity_id.starts_with("http://") || entity_id.starts_with("https://") {
+            entity_id.to_string()
+        } else if entity_id.starts_with('Q') {
+            format!("{WIKIDATA_ENTITY_BASE}{entity_id}")
+        } else if entity_id.starts_with("tt") {
             format!("{}title/{entity_id}", self.base_iri)
         } else {
             format!("{}person/{entity_id}", self.base_iri)
@@ -397,7 +484,12 @@ impl GraphService {
 
     fn insert_quad(&self, subject: Subject, predicate: NamedNode, object: Term) -> Result<()> {
         self.store
-            .insert(&Quad::new(subject, predicate, object, GraphNameRef::DefaultGraph))
+            .insert(&Quad::new(
+                subject,
+                predicate,
+                object,
+                GraphNameRef::DefaultGraph,
+            ))
             .map_err(graph_error)?;
         Ok(())
     }
@@ -434,7 +526,10 @@ fn graph_query_output(results: QueryResults) -> Result<GraphQueryOutput> {
                             _ => triple.subject.to_string(),
                         },
                     ),
-                    ("predicate".to_string(), triple.predicate.as_str().to_string()),
+                    (
+                        "predicate".to_string(),
+                        triple.predicate.as_str().to_string(),
+                    ),
                     ("object".to_string(), term_value(&triple.object)),
                 ]));
             }
@@ -500,7 +595,7 @@ mod tests {
         AppConfig, AppPaths,
         config::{
             DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-            SqliteConfig, TmdbSourceConfig,
+            SqliteConfig, TmdbSourceConfig, WikidataSourceConfig,
         },
     };
     use std::io::Write;
@@ -515,13 +610,19 @@ mod tests {
                 root: root.to_string_lossy().to_string(),
             },
             sqlite: SqliteConfig {
-                path: root.join("db/cinegraph.sqlite").to_string_lossy().to_string(),
+                path: root
+                    .join("db/cinegraph.sqlite")
+                    .to_string_lossy()
+                    .to_string(),
                 max_connections: 1,
             },
             logging: LoggingConfig {
                 level: "info".to_string(),
                 format: "pretty".to_string(),
-                file: root.join("logs/cinegraph.log").to_string_lossy().to_string(),
+                file: root
+                    .join("logs/cinegraph.log")
+                    .to_string_lossy()
+                    .to_string(),
             },
             graph: GraphConfig {
                 base_iri: "https://cinegraph.local/".to_string(),
@@ -549,6 +650,11 @@ mod tests {
                     export_days_back: 2,
                     include_adult: false,
                 },
+                wikidata: WikidataSourceConfig {
+                    enabled: false,
+                    dump_path: String::new(),
+                    language: "en".to_string(),
+                },
             },
         };
         let paths = AppPaths::from_config(&config);
@@ -568,12 +674,34 @@ mod tests {
             .execute(db.pool())
             .await
             .expect("credits");
+        sqlx::query("INSERT INTO wikidata_entities (wikidata_id, label, description, entity_type) VALUES ('Q2000', 'Seven Samurai', 'Wikidata item for Seven Samurai', 'item'), ('Q1000', 'Akira Kurosawa', 'Wikidata item for Akira Kurosawa', 'item'), ('Q2001', 'jidaigeki', 'Japanese period drama genre', 'item')")
+            .execute(db.pool())
+            .await
+            .expect("wikidata entities");
+        sqlx::query(
+            "INSERT INTO title_wikidata_links (imdb_id, wikidata_id) VALUES ('tt1', 'Q2000')",
+        )
+        .execute(db.pool())
+        .await
+        .expect("title wikidata link");
+        sqlx::query(
+            "INSERT INTO person_wikidata_links (imdb_name_id, wikidata_id) VALUES ('nm1', 'Q1000')",
+        )
+        .execute(db.pool())
+        .await
+        .expect("person wikidata link");
+        sqlx::query("INSERT INTO wikidata_claims (subject_wikidata_id, property_id, value_type, value_text, value_wikidata_id, ordinal) VALUES ('Q2000', 'P136', 'wikidata_item', NULL, 'Q2001', 0), ('Q2000', 'P577', 'time', '+1954-04-26T00:00:00Z', NULL, 0), ('Q1000', 'P569', 'time', '+1910-03-23T00:00:00Z', NULL, 0)")
+            .execute(db.pool())
+            .await
+            .expect("wikidata claims");
 
         let service = GraphService::open(&config, &paths).expect("graph service");
         let stats = service.rebuild(&db).await.expect("rebuild");
         assert_eq!(stats.titles_projected, 2);
         assert_eq!(stats.people_projected, 2);
         assert_eq!(stats.credits_projected, 4);
+        assert_eq!(stats.wikidata_links_projected, 2);
+        assert_eq!(stats.wikidata_claims_projected, 3);
 
         let output = service
             .query(
@@ -609,6 +737,18 @@ mod tests {
         let neighbors = service.neighbors("nm1").expect("neighbors");
         assert!(neighbors.iter().any(|neighbor| neighbor.entity_id == "tt1"));
         assert!(neighbors.iter().any(|neighbor| neighbor.entity_id == "tt2"));
+        assert!(
+            neighbors
+                .iter()
+                .any(|neighbor| neighbor.entity_id == "Q1000")
+        );
+
+        let title_neighbors = service.neighbors("tt1").expect("title neighbors");
+        assert!(
+            title_neighbors.iter().any(
+                |neighbor| neighbor.entity_id == "Q2001" && neighbor.entity_name == "jidaigeki"
+            )
+        );
 
         let collaborations = service.collaborations("nm1").expect("collabs");
         assert_eq!(collaborations.len(), 1);

@@ -1,6 +1,6 @@
+use chrono::{Datelike, Duration, Utc};
 use cinegraph_core::{AppConfig, AppPaths, Result};
 use cinegraph_db::{Database, models::DownloadArtifact, queries};
-use chrono::{Datelike, Duration, Utc};
 use futures_util::StreamExt;
 use reqwest::header::{ETAG, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED};
 use sha2::{Digest, Sha256};
@@ -205,18 +205,25 @@ impl Fetcher {
 pub fn tmdb_export_filenames(reference_date: chrono::NaiveDate, days_back: u32) -> Vec<String> {
     (0..=days_back)
         .map(|offset| reference_date - Duration::days(offset as i64))
-        .map(|date| format!("movie_ids_{:02}_{:02}_{:04}.json.gz", date.month(), date.day(), date.year()))
+        .map(|date| {
+            format!(
+                "movie_ids_{:02}_{:02}_{:04}.json.gz",
+                date.month(),
+                date.day(),
+                date.year()
+            )
+        })
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
     use cinegraph_core::config::{
         DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-        SqliteConfig, TmdbSourceConfig,
+        SqliteConfig, TmdbSourceConfig, WikidataSourceConfig,
     };
-    use chrono::NaiveDate;
     use httpmock::{Method::GET, MockServer};
     use tempfile::tempdir;
 
@@ -286,6 +293,11 @@ mod tests {
                     export_days_back: 2,
                     include_adult: false,
                 },
+                wikidata: WikidataSourceConfig {
+                    enabled: false,
+                    dump_path: String::new(),
+                    language: "en".to_string(),
+                },
             },
         };
         let paths = AppPaths::from_config(&config);
@@ -313,6 +325,7 @@ mod tests {
                     datasets: config.sources.imdb.datasets.clone(),
                 },
                 tmdb: config.sources.tmdb.clone(),
+                wikidata: config.sources.wikidata.clone(),
             },
             ..config.clone()
         };

@@ -200,6 +200,41 @@ impl Database {
                 linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS wikidata_entities (
+                wikidata_id TEXT PRIMARY KEY,
+                label TEXT,
+                description TEXT,
+                entity_type TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS title_wikidata_links (
+                imdb_id TEXT PRIMARY KEY REFERENCES titles(imdb_id),
+                wikidata_id TEXT NOT NULL UNIQUE REFERENCES wikidata_entities(wikidata_id),
+                linked_via TEXT NOT NULL DEFAULT 'wikidata_imdb_id',
+                linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS person_wikidata_links (
+                imdb_name_id TEXT PRIMARY KEY REFERENCES people(imdb_name_id),
+                wikidata_id TEXT NOT NULL UNIQUE REFERENCES wikidata_entities(wikidata_id),
+                linked_via TEXT NOT NULL DEFAULT 'wikidata_imdb_id',
+                linked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS wikidata_claims (
+                id INTEGER PRIMARY KEY,
+                subject_wikidata_id TEXT NOT NULL REFERENCES wikidata_entities(wikidata_id),
+                property_id TEXT NOT NULL,
+                value_type TEXT NOT NULL,
+                value_text TEXT,
+                value_wikidata_id TEXT REFERENCES wikidata_entities(wikidata_id),
+                datatype TEXT,
+                rank_name TEXT,
+                ordinal INTEGER NOT NULL DEFAULT 0,
+                raw_json TEXT,
+                UNIQUE(subject_wikidata_id, property_id, ordinal, value_type, value_text, value_wikidata_id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_titles_primary_title ON titles(primary_title);
             CREATE INDEX IF NOT EXISTS idx_people_primary_name ON people(primary_name);
             CREATE INDEX IF NOT EXISTS idx_credits_title ON credits(imdb_id);
@@ -207,6 +242,10 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_tmdb_exports_artifact ON tmdb_movie_exports(export_artifact_id);
             CREATE INDEX IF NOT EXISTS idx_tmdb_exports_status ON tmdb_movie_exports(hydrate_status);
             CREATE INDEX IF NOT EXISTS idx_tmdb_movies_imdb_id ON tmdb_movies(imdb_id);
+            CREATE INDEX IF NOT EXISTS idx_title_wikidata_links_wikidata ON title_wikidata_links(wikidata_id);
+            CREATE INDEX IF NOT EXISTS idx_person_wikidata_links_wikidata ON person_wikidata_links(wikidata_id);
+            CREATE INDEX IF NOT EXISTS idx_wikidata_claims_subject ON wikidata_claims(subject_wikidata_id);
+            CREATE INDEX IF NOT EXISTS idx_wikidata_claims_value_wikidata ON wikidata_claims(value_wikidata_id);
             "#,
         )
         .execute(&self.pool)
@@ -222,8 +261,7 @@ mod tests {
         AppConfig,
         config::{
             DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-            TmdbSourceConfig,
-            SqliteConfig,
+            SqliteConfig, TmdbSourceConfig, WikidataSourceConfig,
         },
     };
     use tempfile::tempdir;
@@ -276,6 +314,11 @@ mod tests {
                     request_interval_ms: 0,
                     export_days_back: 2,
                     include_adult: false,
+                },
+                wikidata: WikidataSourceConfig {
+                    enabled: false,
+                    dump_path: String::new(),
+                    language: "en".to_string(),
                 },
             },
         };

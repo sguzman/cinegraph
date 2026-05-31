@@ -90,8 +90,8 @@ impl AppPaths {
 mod tests {
     use super::*;
     use crate::config::{
-        AppConfig, DataConfig, FetchConfig, ImdbSourceConfig, LoggingConfig, SourcesConfig,
-        GraphConfig, SqliteConfig, TmdbSourceConfig,
+        AppConfig, DataConfig, FetchConfig, GraphConfig, ImdbSourceConfig, LoggingConfig,
+        SourcesConfig, SqliteConfig, TmdbSourceConfig, WikidataSourceConfig,
     };
     use tempfile::tempdir;
 
@@ -154,6 +154,11 @@ mod tests {
                     request_interval_ms: 0,
                     export_days_back: 2,
                     include_adult: false,
+                },
+                wikidata: WikidataSourceConfig {
+                    enabled: false,
+                    dump_path: String::new(),
+                    language: "en".to_string(),
                 },
             },
         };

@@ -6,6 +6,7 @@ members = [
     "crates/cinegraph-db",
     "crates/cinegraph-imdb",
     "crates/cinegraph-tmdb",
+    "crates/cinegraph-wikidata",
     "crates/cinegraph-search",
     "crates/cinegraph-graph",
     "crates/cinegraph-export",

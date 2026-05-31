@@ -48,6 +48,7 @@ pub struct FetchConfig {
 pub struct SourcesConfig {
     pub imdb: ImdbSourceConfig,
     pub tmdb: TmdbSourceConfig,
+    pub wikidata: WikidataSourceConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +69,13 @@ pub struct TmdbSourceConfig {
     pub request_interval_ms: u64,
     pub export_days_back: u32,
     pub include_adult: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WikidataSourceConfig {
+    pub enabled: bool,
+    pub dump_path: String,
+    pub language: String,
 }
 
 impl AppConfig {
@@ -93,6 +101,11 @@ impl AppConfig {
         {
             return Err(CinegraphError::Config(
                 "sources.tmdb URLs must not be empty when TMDb is enabled".to_string(),
+            ));
+        }
+        if self.sources.wikidata.enabled && self.sources.wikidata.dump_path.is_empty() {
+            return Err(CinegraphError::Config(
+                "sources.wikidata.dump_path must not be empty when Wikidata is enabled".to_string(),
             ));
         }
         if !self.graph.base_iri.ends_with('/') {

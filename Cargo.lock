@@ -517,6 +517,7 @@ dependencies = [
  "cinegraph-imdb",
  "cinegraph-search",
  "cinegraph-tmdb",
+ "cinegraph-wikidata",
  "clap",
  "serde_json",
  "tempfile",
@@ -633,6 +634,22 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "cinegraph-wikidata"
+version = "0.1.0"
+dependencies = [
+ "cinegraph-core",
+ "cinegraph-db",
+ "flate2",
+ "serde",
+ "serde_json",
+ "sha2",
  "sqlx",
  "tempfile",
  "tokio",

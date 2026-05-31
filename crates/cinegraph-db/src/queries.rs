@@ -2,8 +2,9 @@ use cinegraph_core::Result;
 use sqlx::Row;
 
 use crate::models::{
-    Dataset, DownloadArtifact, GraphCredit, GraphPerson, GraphTitle, IndexablePerson,
-    IndexableTitle, LookupPerson, LookupTitle, PendingTmdbMovieHydration, TmdbMovieExportEntry,
+    Dataset, DownloadArtifact, GraphCredit, GraphPerson, GraphTitle, GraphWikidataClaim,
+    GraphWikidataLink, IndexablePerson, IndexableTitle, LookupPerson, LookupTitle,
+    PendingTmdbMovieHydration, TmdbMovieExportEntry,
 };
 
 pub async fn upsert_dataset(
@@ -329,7 +330,9 @@ pub async fn titles_by_ids_in_order(
         return Ok(Vec::new());
     }
 
-    let placeholders = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(", ");
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
         "SELECT imdb_id, primary_title, original_title, title_type, start_year, runtime_minutes, genres
          FROM titles WHERE imdb_id IN ({placeholders})"
@@ -354,7 +357,9 @@ pub async fn people_by_ids_in_order(
         return Ok(Vec::new());
     }
 
-    let placeholders = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(", ");
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
     let sql = format!(
         "SELECT imdb_name_id, primary_name, birth_year, death_year, primary_professions
          FROM people WHERE imdb_name_id IN ({placeholders})"
@@ -442,7 +447,11 @@ pub async fn stats(pool: &sqlx::SqlitePool) -> Result<serde_json::Value> {
         "tmdb_movies": count(pool, "tmdb_movies").await?,
         "tmdb_people": count(pool, "tmdb_people").await?,
         "tmdb_movie_credits": count(pool, "tmdb_movie_credits").await?,
-        "title_tmdb_links": count(pool, "title_tmdb_links").await?
+        "title_tmdb_links": count(pool, "title_tmdb_links").await?,
+        "wikidata_entities": count(pool, "wikidata_entities").await?,
+        "title_wikidata_links": count(pool, "title_wikidata_links").await?,
+        "person_wikidata_links": count(pool, "person_wikidata_links").await?,
+        "wikidata_claims": count(pool, "wikidata_claims").await?
     }))
 }
 
@@ -716,4 +725,215 @@ pub async fn title_exists(pool: &sqlx::SqlitePool, imdb_id: &str) -> Result<bool
         .fetch_optional(pool)
         .await?;
     Ok(row.is_some())
+}
+
+pub async fn person_exists(pool: &sqlx::SqlitePool, imdb_name_id: &str) -> Result<bool> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT imdb_name_id FROM people WHERE imdb_name_id = ?")
+            .bind(imdb_name_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.is_some())
+}
+
+pub async fn clear_wikidata_import(pool: &sqlx::SqlitePool) -> Result<()> {
+    sqlx::query("DELETE FROM wikidata_claims")
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM title_wikidata_links")
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM person_wikidata_links")
+        .execute(pool)
+        .await?;
+    sqlx::query("DELETE FROM wikidata_entities")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn upsert_wikidata_entity(
+    pool: &sqlx::SqlitePool,
+    wikidata_id: &str,
+    label: Option<&str>,
+    description: Option<&str>,
+    entity_type: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO wikidata_entities (wikidata_id, label, description, entity_type)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(wikidata_id) DO UPDATE SET
+            label = COALESCE(excluded.label, wikidata_entities.label),
+            description = COALESCE(excluded.description, wikidata_entities.description),
+            entity_type = COALESCE(excluded.entity_type, wikidata_entities.entity_type)
+        "#,
+    )
+    .bind(wikidata_id)
+    .bind(label)
+    .bind(description)
+    .bind(entity_type)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn clear_wikidata_claims_for_subject(
+    pool: &sqlx::SqlitePool,
+    subject_wikidata_id: &str,
+) -> Result<()> {
+    sqlx::query("DELETE FROM wikidata_claims WHERE subject_wikidata_id = ?")
+        .bind(subject_wikidata_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn insert_wikidata_claim(
+    pool: &sqlx::SqlitePool,
+    subject_wikidata_id: &str,
+    property_id: &str,
+    value_type: &str,
+    value_text: Option<&str>,
+    value_wikidata_id: Option<&str>,
+    datatype: Option<&str>,
+    rank_name: Option<&str>,
+    ordinal: i64,
+    raw_json: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO wikidata_claims (
+            subject_wikidata_id, property_id, value_type, value_text, value_wikidata_id,
+            datatype, rank_name, ordinal, raw_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(subject_wikidata_id, property_id, ordinal, value_type, value_text, value_wikidata_id)
+        DO UPDATE SET
+            datatype = excluded.datatype,
+            rank_name = excluded.rank_name,
+            raw_json = excluded.raw_json
+        "#,
+    )
+    .bind(subject_wikidata_id)
+    .bind(property_id)
+    .bind(value_type)
+    .bind(value_text)
+    .bind(value_wikidata_id)
+    .bind(datatype)
+    .bind(rank_name)
+    .bind(ordinal)
+    .bind(raw_json)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub async fn link_title_to_wikidata_entity(
+    pool: &sqlx::SqlitePool,
+    imdb_id: &str,
+    wikidata_id: &str,
+) -> Result<bool> {
+    let result = sqlx::query(
+        r#"
+        INSERT INTO title_wikidata_links (imdb_id, wikidata_id, linked_via)
+        VALUES (?, ?, 'wikidata_imdb_id')
+        ON CONFLICT(imdb_id) DO UPDATE SET
+            wikidata_id = excluded.wikidata_id,
+            linked_at = CURRENT_TIMESTAMP
+        "#,
+    )
+    .bind(imdb_id)
+    .bind(wikidata_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() >= 1)
+}
+
+pub async fn link_person_to_wikidata_entity(
+    pool: &sqlx::SqlitePool,
+    imdb_name_id: &str,
+    wikidata_id: &str,
+) -> Result<bool> {
+    let result = sqlx::query(
+        r#"
+        INSERT INTO person_wikidata_links (imdb_name_id, wikidata_id, linked_via)
+        VALUES (?, ?, 'wikidata_imdb_id')
+        ON CONFLICT(imdb_name_id) DO UPDATE SET
+            wikidata_id = excluded.wikidata_id,
+            linked_at = CURRENT_TIMESTAMP
+        "#,
+    )
+    .bind(imdb_name_id)
+    .bind(wikidata_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() >= 1)
+}
+
+pub async fn wikidata_links_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<GraphWikidataLink>> {
+    let rows = sqlx::query_as::<_, GraphWikidataLink>(
+        r#"
+        SELECT
+            'title' AS entity_kind,
+            t.imdb_id AS local_id,
+            t.primary_title AS local_name,
+            e.wikidata_id,
+            e.label AS wikidata_label,
+            e.description AS wikidata_description
+        FROM title_wikidata_links l
+        JOIN titles t ON t.imdb_id = l.imdb_id
+        JOIN wikidata_entities e ON e.wikidata_id = l.wikidata_id
+        UNION ALL
+        SELECT
+            'person' AS entity_kind,
+            p.imdb_name_id AS local_id,
+            p.primary_name AS local_name,
+            e.wikidata_id,
+            e.label AS wikidata_label,
+            e.description AS wikidata_description
+        FROM person_wikidata_links l
+        JOIN people p ON p.imdb_name_id = l.imdb_name_id
+        JOIN wikidata_entities e ON e.wikidata_id = l.wikidata_id
+        ORDER BY entity_kind, local_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn wikidata_claims_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<GraphWikidataClaim>> {
+    let rows = sqlx::query_as::<_, GraphWikidataClaim>(
+        r#"
+        SELECT
+            'title' AS entity_kind,
+            l.imdb_id AS local_id,
+            c.subject_wikidata_id,
+            c.property_id,
+            c.value_type,
+            c.value_text,
+            c.value_wikidata_id,
+            v.label AS value_wikidata_label
+        FROM wikidata_claims c
+        JOIN title_wikidata_links l ON l.wikidata_id = c.subject_wikidata_id
+        LEFT JOIN wikidata_entities v ON v.wikidata_id = c.value_wikidata_id
+        UNION ALL
+        SELECT
+            'person' AS entity_kind,
+            l.imdb_name_id AS local_id,
+            c.subject_wikidata_id,
+            c.property_id,
+            c.value_type,
+            c.value_text,
+            c.value_wikidata_id,
+            v.label AS value_wikidata_label
+        FROM wikidata_claims c
+        JOIN person_wikidata_links l ON l.wikidata_id = c.subject_wikidata_id
+        LEFT JOIN wikidata_entities v ON v.wikidata_id = c.value_wikidata_id
+        ORDER BY entity_kind, local_id, property_id, value_wikidata_id, value_text
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
 }

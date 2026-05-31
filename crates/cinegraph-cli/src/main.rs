@@ -8,6 +8,7 @@ use cinegraph_graph::GraphService;
 use cinegraph_imdb::import::ImdbImporter;
 use cinegraph_search::SearchService;
 use cinegraph_tmdb::TmdbImporter;
+use cinegraph_wikidata::WikidataImporter;
 use clap::Parser;
 use tracing::info;
 
@@ -106,6 +107,11 @@ async fn run_command(
             ImportCommands::Tmdb => {
                 let importer = TmdbImporter::new(db, config)?;
                 let stats = importer.import_latest(config).await?;
+                println!("{}", serde_json::to_string_pretty(&stats)?);
+            }
+            ImportCommands::Wikidata => {
+                let importer = WikidataImporter::new(db);
+                let stats = importer.import_dump(config).await?;
                 println!("{}", serde_json::to_string_pretty(&stats)?);
             }
         },
