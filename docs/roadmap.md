@@ -5,7 +5,7 @@ Last reviewed: 2026-05-30
 ## Status
 
 - [x] Milestone 1: IMDb-only SQLite warehouse
-- [ ] Milestone 2: Full-text search
+- [x] Milestone 2: Full-text search
 - [ ] Milestone 3: Graph projection
 - [ ] Milestone 4: TMDb enrichment
 - [ ] Milestone 5: Wikidata enrichment
@@ -44,13 +44,13 @@ Last reviewed: 2026-05-30
 
 ## Milestone 2: Full-text Search
 
-- [ ] Add the `cinegraph-search` implementation crate
-- [ ] Implement `cinegraph index search`
-- [ ] Implement `cinegraph search title <query>`
-- [ ] Implement `cinegraph search person <query>`
-- [ ] Build Tantivy indexes from SQLite instead of raw TSVs
-- [ ] Hydrate final search results from SQLite after ranking
-- [ ] Add search index tests and CLI coverage
+- [x] Add the `cinegraph-search` implementation crate
+- [x] Implement `cinegraph index search`
+- [x] Implement `cinegraph search title <query>`
+- [x] Implement `cinegraph search person <query>`
+- [x] Build Tantivy indexes from SQLite instead of raw TSVs
+- [x] Hydrate final search results from SQLite after ranking
+- [x] Add search index tests and CLI coverage
 
 ## Milestone 3: Graph Projection
 

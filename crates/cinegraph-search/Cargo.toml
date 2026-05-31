@@ -6,4 +6,11 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+cinegraph-core = { path = "../cinegraph-core" }
+cinegraph-db = { path = "../cinegraph-db" }
+serde.workspace = true
+tantivy.workspace = true
+tracing.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true

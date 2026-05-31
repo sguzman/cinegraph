@@ -5,10 +5,13 @@ use cinegraph_core::{AppConfig, AppPaths, logging::init_logging};
 use cinegraph_db::{Database, queries};
 use cinegraph_fetch::Fetcher;
 use cinegraph_imdb::import::ImdbImporter;
+use cinegraph_search::SearchService;
 use clap::Parser;
 use tracing::info;
 
-use crate::args::{Cli, Commands, FetchCommands, ImportCommands, LookupCommands};
+use crate::args::{
+    Cli, Commands, FetchCommands, ImportCommands, IndexCommands, LookupCommands, SearchCommands,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -43,6 +46,13 @@ async fn run_command(
     db: &Database,
 ) -> anyhow::Result<()> {
     match command {
+        Commands::Index { command } => match command {
+            IndexCommands::Search => {
+                let service = SearchService::open(paths)?;
+                let stats = service.rebuild(db).await?;
+                println!("{}", serde_json::to_string_pretty(&stats)?);
+            }
+        },
         Commands::Fetch { command } => match command {
             FetchCommands::Imdb => {
                 let fetcher = Fetcher::new(config)?;
@@ -75,6 +85,18 @@ async fn run_command(
             let stats = queries::stats(db.pool()).await?;
             println!("{}", serde_json::to_string_pretty(&stats)?);
         }
+        Commands::Search { command } => match command {
+            SearchCommands::Title { query, limit } => {
+                let service = SearchService::open(paths)?;
+                let rows = service.search_titles(db, &query, limit).await?;
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            }
+            SearchCommands::Person { query, limit } => {
+                let service = SearchService::open(paths)?;
+                let rows = service.search_people(db, &query, limit).await?;
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            }
+        },
         Commands::Lookup { command } => match command {
             LookupCommands::Title { query } => {
                 let rows = queries::lookup_title(db.pool(), &query).await?;
@@ -94,6 +116,7 @@ async fn run_command(
                 serde_json::to_string_pretty(&serde_json::json!({
                     "data_root": paths.root,
                     "sqlite_path": paths.sqlite_path(config),
+                    "search_index_path": paths.search_index_dir(),
                     "stats": stats
                 }))?
             );

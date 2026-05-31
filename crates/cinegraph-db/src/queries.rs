@@ -1,7 +1,9 @@
 use cinegraph_core::Result;
 use sqlx::Row;
 
-use crate::models::{Dataset, DownloadArtifact, LookupPerson, LookupTitle};
+use crate::models::{
+    Dataset, DownloadArtifact, IndexablePerson, IndexableTitle, LookupPerson, LookupTitle,
+};
 
 pub async fn upsert_dataset(
     pool: &sqlx::SqlitePool,
@@ -235,6 +237,101 @@ pub async fn lookup_person(pool: &sqlx::SqlitePool, query: &str) -> Result<Vec<L
     .fetch_all(pool)
     .await?;
     Ok(rows)
+}
+
+pub async fn titles_for_search_index(pool: &sqlx::SqlitePool) -> Result<Vec<IndexableTitle>> {
+    let rows = sqlx::query_as::<_, IndexableTitle>(
+        r#"
+        SELECT
+            t.imdb_id,
+            t.primary_title,
+            t.original_title,
+            t.title_type,
+            t.start_year,
+            t.genres,
+            GROUP_CONCAT(DISTINCT p.primary_name) AS people_text
+        FROM titles t
+        LEFT JOIN credits c ON c.imdb_id = t.imdb_id
+        LEFT JOIN people p ON p.imdb_name_id = c.imdb_name_id
+        GROUP BY t.imdb_id, t.primary_title, t.original_title, t.title_type, t.start_year, t.genres
+        ORDER BY t.primary_title
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn people_for_search_index(pool: &sqlx::SqlitePool) -> Result<Vec<IndexablePerson>> {
+    let rows = sqlx::query_as::<_, IndexablePerson>(
+        r#"
+        SELECT
+            p.imdb_name_id,
+            p.primary_name,
+            p.birth_year,
+            p.death_year,
+            p.primary_professions,
+            GROUP_CONCAT(DISTINCT t.primary_title) AS title_text
+        FROM people p
+        LEFT JOIN credits c ON c.imdb_name_id = p.imdb_name_id
+        LEFT JOIN titles t ON t.imdb_id = c.imdb_id
+        GROUP BY p.imdb_name_id, p.primary_name, p.birth_year, p.death_year, p.primary_professions
+        ORDER BY p.primary_name
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn titles_by_ids_in_order(
+    pool: &sqlx::SqlitePool,
+    ids: &[String],
+) -> Result<Vec<LookupTitle>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT imdb_id, primary_title, original_title, title_type, start_year, runtime_minutes, genres
+         FROM titles WHERE imdb_id IN ({placeholders})"
+    );
+    let mut query = sqlx::query_as::<_, LookupTitle>(&sql);
+    for id in ids {
+        query = query.bind(id);
+    }
+    let rows = query.fetch_all(pool).await?;
+    let mut by_id = std::collections::HashMap::with_capacity(rows.len());
+    for row in rows {
+        by_id.insert(row.imdb_id.clone(), row);
+    }
+    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
+}
+
+pub async fn people_by_ids_in_order(
+    pool: &sqlx::SqlitePool,
+    ids: &[String],
+) -> Result<Vec<LookupPerson>> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = std::iter::repeat_n("?", ids.len()).collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT imdb_name_id, primary_name, birth_year, death_year, primary_professions
+         FROM people WHERE imdb_name_id IN ({placeholders})"
+    );
+    let mut query = sqlx::query_as::<_, LookupPerson>(&sql);
+    for id in ids {
+        query = query.bind(id);
+    }
+    let rows = query.fetch_all(pool).await?;
+    let mut by_id = std::collections::HashMap::with_capacity(rows.len());
+    for row in rows {
+        by_id.insert(row.imdb_name_id.clone(), row);
+    }
+    Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
 pub async fn stats(pool: &sqlx::SqlitePool) -> Result<serde_json::Value> {

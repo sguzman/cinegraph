@@ -47,6 +47,18 @@ impl AppPaths {
         self.root.join("tmp")
     }
 
+    pub fn search_index_dir(&self) -> PathBuf {
+        self.root.join("index").join("tantivy")
+    }
+
+    pub fn title_search_index_dir(&self) -> PathBuf {
+        self.search_index_dir().join("titles")
+    }
+
+    pub fn person_search_index_dir(&self) -> PathBuf {
+        self.search_index_dir().join("people")
+    }
+
     pub fn ensure_dirs(&self, config: &AppConfig) -> std::io::Result<()> {
         for path in [
             self.root.clone(),

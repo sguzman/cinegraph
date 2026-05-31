@@ -43,3 +43,24 @@ pub struct LookupPerson {
     pub death_year: Option<i64>,
     pub primary_professions: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct IndexableTitle {
+    pub imdb_id: String,
+    pub primary_title: String,
+    pub original_title: Option<String>,
+    pub title_type: String,
+    pub start_year: Option<i64>,
+    pub genres: Option<String>,
+    pub people_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct IndexablePerson {
+    pub imdb_name_id: String,
+    pub primary_name: String,
+    pub birth_year: Option<i64>,
+    pub death_year: Option<i64>,
+    pub primary_professions: Option<String>,
+    pub title_text: Option<String>,
+}
