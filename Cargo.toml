@@ -1,6 +1,45 @@
-[package]
-name = "cinegraph"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+members = [
+    "crates/cinegraph-cli",
+    "crates/cinegraph-core",
+    "crates/cinegraph-fetch",
+    "crates/cinegraph-db",
+    "crates/cinegraph-imdb",
+    "crates/cinegraph-search",
+    "crates/cinegraph-graph",
+    "crates/cinegraph-export",
+]
+resolver = "3"
 
-[dependencies]
+[workspace.package]
+edition = "2024"
+license = "CC0-1.0"
+authors = ["Salvador Guzman"]
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+csv = "1"
+flate2 = "1"
+futures-util = "0.3"
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["charset", "gzip", "json", "rustls-tls", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate"] }
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"
