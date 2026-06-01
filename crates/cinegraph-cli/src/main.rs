@@ -25,6 +25,12 @@ async fn main() -> anyhow::Result<()> {
     let paths = AppPaths::from_config(&config);
     paths.ensure_dirs(&config)?;
     init_logging(&config.logging)?;
+    info!(
+        config_path = %cli.config.display(),
+        command = %command_name(&cli.command),
+        data_root = %paths.root.display(),
+        "cinegraph command starting"
+    );
 
     match cli.command {
         Commands::Init => {
@@ -176,4 +182,38 @@ async fn run_command(
         Commands::Init => unreachable!(),
     }
     Ok(())
+}
+
+fn command_name(command: &Commands) -> &'static str {
+    match command {
+        Commands::Init => "init",
+        Commands::Index { command } => match command {
+            IndexCommands::Search => "index search",
+            IndexCommands::Graph => "index graph",
+        },
+        Commands::Fetch { command } => match command {
+            FetchCommands::Imdb => "fetch imdb",
+            FetchCommands::Tmdb => "fetch tmdb",
+        },
+        Commands::Import { command } => match command {
+            ImportCommands::Imdb => "import imdb",
+            ImportCommands::Tmdb => "import tmdb",
+            ImportCommands::Wikidata => "import wikidata",
+        },
+        Commands::Stats => "stats",
+        Commands::Search { command } => match command {
+            SearchCommands::Title { .. } => "search title",
+            SearchCommands::Person { .. } => "search person",
+        },
+        Commands::Graph { command } => match command {
+            GraphCommands::Query { .. } => "graph query",
+            GraphCommands::Neighbors { .. } => "graph neighbors",
+            GraphCommands::Collaborations { .. } => "graph collaborations",
+        },
+        Commands::Lookup { command } => match command {
+            LookupCommands::Title { .. } => "lookup title",
+            LookupCommands::Person { .. } => "lookup person",
+        },
+        Commands::Doctor => "doctor",
+    }
 }

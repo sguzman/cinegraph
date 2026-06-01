@@ -46,6 +46,12 @@ impl Fetcher {
         dataset_name: &str,
     ) -> Result<FetchOutcome> {
         let url = format!("{base_url}{dataset_name}");
+        info!(
+            source = %source,
+            dataset = %dataset_name,
+            url = %url,
+            "starting dataset fetch"
+        );
         let dataset = queries::upsert_dataset(db.pool(), source, dataset_name, &url).await?;
         let previous = queries::last_artifact_for_dataset(db.pool(), dataset.id).await?;
         let span = info_span!("fetch.http_request", source = %source, url = %url);
@@ -53,17 +59,32 @@ impl Fetcher {
 
         let mut request = self.client.get(&url);
         if let Some(previous) = &previous {
+            info!(
+                previous_sha256 = %previous.sha256,
+                previous_etag = ?previous.etag,
+                previous_last_modified = ?previous.last_modified,
+                "using previous artifact metadata for conditional request"
+            );
             if let Some(etag) = &previous.etag {
                 request = request.header(IF_NONE_MATCH, etag);
             }
             if let Some(last_modified) = &previous.last_modified {
                 request = request.header(IF_MODIFIED_SINCE, last_modified);
             }
+        } else {
+            info!("no previous artifact metadata available; sending unconditional request");
         }
 
+        info!("sending HTTP request");
         let response = request.send().await?;
+        info!(status = %response.status(), "received HTTP response");
         if response.status() == reqwest::StatusCode::NOT_MODIFIED {
             let artifact = previous.expect("previous artifact must exist for 304");
+            info!(
+                sha256 = %artifact.sha256,
+                local_path = %artifact.local_path,
+                "dataset not modified; reusing previous artifact"
+            );
             return Ok(FetchOutcome {
                 dataset_name: dataset_name.to_string(),
                 artifact,
@@ -84,6 +105,7 @@ impl Fetcher {
 
         let temp_name = format!("{}.part", Uuid::new_v4());
         let temp_path = paths.temp_dir().join(temp_name);
+        info!(temp_path = %temp_path.display(), "streaming response body to temporary file");
         let mut writer = BufWriter::new(fs::File::create(&temp_path).await?);
         let mut hasher = Sha256::new();
         let mut byte_len: i64 = 0;
@@ -99,25 +121,41 @@ impl Fetcher {
 
         let sha256 = hex::encode(hasher.finalize());
         let blob_path = paths.blob_path(&sha256);
+        info!(
+            sha256 = %sha256,
+            byte_len,
+            blob_path = %blob_path.display(),
+            "finished download and computed content hash"
+        );
         if let Some(parent) = blob_path.parent() {
             fs::create_dir_all(parent).await?;
         }
         if fs::metadata(&blob_path).await.is_err() {
             fs::rename(&temp_path, &blob_path).await?;
+            info!("stored new canonical blob");
         } else {
             let _ = fs::remove_file(&temp_path).await;
+            info!("canonical blob already existed; removed temporary file");
         }
 
         let friendly_path = paths.raw_source_dir(source).join(dataset_name);
         fs::copy(&blob_path, &friendly_path).await?;
+        info!(
+            friendly_path = %friendly_path.display(),
+            "updated source-friendly raw dataset copy"
+        );
 
         let local_path = blob_path.to_string_lossy().to_string();
-        let artifact = if let Some(existing) =
-            queries::artifact_by_hash(db.pool(), dataset.id, &sha256).await?
+        let artifact = if let Some(existing) = queries::artifact_by_hash(db.pool(), dataset.id, &sha256).await?
         {
+            info!(
+                artifact_id = existing.id,
+                sha256 = %existing.sha256,
+                "artifact record already exists for this dataset hash"
+            );
             existing
         } else {
-            queries::insert_artifact(
+            let artifact = queries::insert_artifact(
                 db.pool(),
                 dataset.id,
                 &url,
@@ -127,10 +165,23 @@ impl Fetcher {
                 etag.as_deref(),
                 last_modified.as_deref(),
             )
-            .await?
+            .await?;
+            info!(
+                artifact_id = artifact.id,
+                sha256 = %artifact.sha256,
+                etag = ?artifact.etag,
+                last_modified = ?artifact.last_modified,
+                "created new artifact metadata record"
+            );
+            artifact
         };
 
-        info!(sha256 = %artifact.sha256, bytes = artifact.byte_len, "dataset fetched");
+        info!(
+            dataset = %dataset_name,
+            sha256 = %artifact.sha256,
+            bytes = artifact.byte_len,
+            "dataset fetch completed"
+        );
         Ok(FetchOutcome {
             dataset_name: dataset_name.to_string(),
             artifact,
@@ -144,8 +195,14 @@ impl Fetcher {
         config: &AppConfig,
         paths: &AppPaths,
     ) -> Result<Vec<FetchOutcome>> {
+        info!(
+            dataset_count = config.sources.imdb.datasets.len(),
+            base_url = %config.sources.imdb.base_url,
+            "starting IMDb fetch run"
+        );
         let mut out = Vec::new();
         for dataset_name in &config.sources.imdb.datasets {
+            info!(dataset = %dataset_name, "queueing IMDb dataset fetch");
             out.push(
                 self.fetch_dataset(
                     db,
@@ -157,6 +214,7 @@ impl Fetcher {
                 .await?,
             );
         }
+        info!(fetched = out.len(), "finished IMDb fetch run");
         Ok(out)
     }
 
@@ -168,9 +226,11 @@ impl Fetcher {
     ) -> Result<Vec<FetchOutcome>> {
         let today = Utc::now().date_naive();
         let candidates = tmdb_export_filenames(today, config.sources.tmdb.export_days_back);
+        info!(?candidates, "starting TMDb export fetch run");
         let mut last_error = None;
 
         for dataset_name in candidates {
+            info!(dataset = %dataset_name, "trying TMDb export candidate");
             match self
                 .fetch_dataset(
                     db,
@@ -185,6 +245,7 @@ impl Fetcher {
                 Err(error) => {
                     let message = error.to_string();
                     if message.contains("404") {
+                        info!(dataset = %dataset_name, "TMDb export candidate not found; trying older fallback");
                         last_error = Some(error);
                         continue;
                     }
