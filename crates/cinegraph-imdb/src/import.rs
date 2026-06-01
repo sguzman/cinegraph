@@ -281,7 +281,8 @@ impl<'a> ImdbImporter<'a> {
                 continue;
             }
 
-            insert_credit_list(&mut tx, &row.imdb_id, imdb_null(&row.directors), "director").await?;
+            insert_credit_list(&mut tx, &row.imdb_id, imdb_null(&row.directors), "director")
+                .await?;
             insert_credit_list(&mut tx, &row.imdb_id, imdb_null(&row.writers), "writer").await?;
             stats.rows_inserted += 1;
         }

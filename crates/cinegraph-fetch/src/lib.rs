@@ -8,11 +8,12 @@ use tokio::{
     fs,
     io::{AsyncWriteExt, BufWriter},
 };
-use tracing::{info, info_span, instrument};
+use tracing::{info, info_span, instrument, warn};
 use uuid::Uuid;
 
 pub struct Fetcher {
     client: reqwest::Client,
+    max_attempts: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -29,11 +30,14 @@ impl Fetcher {
             .connect_timeout(std::time::Duration::from_secs(
                 config.fetch.connect_timeout_seconds,
             ))
-            .timeout(std::time::Duration::from_secs(
+            .read_timeout(std::time::Duration::from_secs(
                 config.fetch.request_timeout_seconds,
             ))
             .build()?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            max_attempts: config.fetch.retries.max(1),
+        })
     }
 
     #[instrument(skip_all, fields(source = "imdb", dataset = %dataset_name))]
@@ -45,11 +49,50 @@ impl Fetcher {
         paths: &AppPaths,
         dataset_name: &str,
     ) -> Result<FetchOutcome> {
+        let mut last_error = None;
+        for attempt in 1..=self.max_attempts {
+            match self
+                .fetch_dataset_once(db, source, base_url, paths, dataset_name, attempt)
+                .await
+            {
+                Ok(outcome) => return Ok(outcome),
+                Err(error) => {
+                    let error_message = error.to_string();
+                    if attempt == self.max_attempts {
+                        return Err(error);
+                    }
+                    warn!(
+                        source = %source,
+                        dataset = %dataset_name,
+                        attempt,
+                        max_attempts = self.max_attempts,
+                        error = %error_message,
+                        "dataset fetch attempt failed; retrying"
+                    );
+                    last_error = Some(error);
+                }
+            }
+        }
+
+        Err(last_error.expect("retry loop must capture at least one error"))
+    }
+
+    async fn fetch_dataset_once(
+        &self,
+        db: &Database,
+        source: &str,
+        base_url: &str,
+        paths: &AppPaths,
+        dataset_name: &str,
+        attempt: u32,
+    ) -> Result<FetchOutcome> {
         let url = format!("{base_url}{dataset_name}");
         info!(
             source = %source,
             dataset = %dataset_name,
             url = %url,
+            attempt,
+            max_attempts = self.max_attempts,
             "starting dataset fetch"
         );
         let dataset = queries::upsert_dataset(db.pool(), source, dataset_name, &url).await?;
@@ -106,20 +149,31 @@ impl Fetcher {
         let temp_name = format!("{}.part", Uuid::new_v4());
         let temp_path = paths.temp_dir().join(temp_name);
         info!(temp_path = %temp_path.display(), "streaming response body to temporary file");
-        let mut writer = BufWriter::new(fs::File::create(&temp_path).await?);
-        let mut hasher = Sha256::new();
-        let mut byte_len: i64 = 0;
-        let mut stream = response.bytes_stream();
+        let download_result = async {
+            let mut writer = BufWriter::new(fs::File::create(&temp_path).await?);
+            let mut hasher = Sha256::new();
+            let mut byte_len: i64 = 0;
+            let mut stream = response.bytes_stream();
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            byte_len += chunk.len() as i64;
-            hasher.update(&chunk);
-            writer.write_all(&chunk).await?;
+            while let Some(chunk) = stream.next().await {
+                let chunk = chunk?;
+                byte_len += chunk.len() as i64;
+                hasher.update(&chunk);
+                writer.write_all(&chunk).await?;
+            }
+            writer.flush().await?;
+            Ok::<_, cinegraph_core::CinegraphError>((hex::encode(hasher.finalize()), byte_len))
         }
-        writer.flush().await?;
+        .await;
 
-        let sha256 = hex::encode(hasher.finalize());
+        let (sha256, byte_len) = match download_result {
+            Ok(download) => download,
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path).await;
+                return Err(error);
+            }
+        };
+
         let blob_path = paths.blob_path(&sha256);
         info!(
             sha256 = %sha256,
@@ -146,7 +200,8 @@ impl Fetcher {
         );
 
         let local_path = blob_path.to_string_lossy().to_string();
-        let artifact = if let Some(existing) = queries::artifact_by_hash(db.pool(), dataset.id, &sha256).await?
+        let artifact = if let Some(existing) =
+            queries::artifact_by_hash(db.pool(), dataset.id, &sha256).await?
         {
             info!(
                 artifact_id = existing.id,
