@@ -1,14 +1,14 @@
 [data]
-root = ".data"
+root = ".cache/cinegraph"
 
 [sqlite]
-path = ".data/db/cinegraph.sqlite"
+path = ".cache/cinegraph/db/cinegraph.sqlite"
 max_connections = 4
 
 [logging]
 level = "info"
 format = "pretty"
-file = ".data/logs/cinegraph.log"
+file = ".cache/cinegraph/logs/cinegraph.log"
 
 [graph]
 base_iri = "https://cinegraph.local/"

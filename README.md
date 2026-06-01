@@ -44,7 +44,7 @@ cargo run -- graph collaborations nm0000001
 cargo run -- graph query queries/director_filmography.rq
 ```
 
-TMDb import requires a configured `sources.tmdb.api_read_access_token` in your runtime config. Wikidata import requires `sources.wikidata.dump_path` to point at an existing local dump file; `cinegraph` does not download that dump for you. The default config file is [config/cinegraph.example.toml](/win/linux/Code/rust/cinegraph/config/cinegraph.example.toml). Runtime data is written under `.data/` unless you point `--config` or `CINEGRAPH_CONFIG` at another config file. Tantivy indexes are written under `.data/index/tantivy/`, and the Oxigraph store is written under `.data/graph/oxigraph/`.
+TMDb import requires a configured `sources.tmdb.api_read_access_token` in your runtime config. Wikidata import requires `sources.wikidata.dump_path` to point at an existing local dump file; `cinegraph` does not download that dump for you. The default config file is [config/cinegraph.example.toml](/win/linux/Code/rust/cinegraph/config/cinegraph.example.toml). Runtime data is written under `.cache/cinegraph/` unless you point `--config` or `CINEGRAPH_CONFIG` at another config file. Tantivy indexes are written under `.cache/cinegraph/index/tantivy/`, and the Oxigraph store is written under `.cache/cinegraph/graph/oxigraph/`.
 
 ## Repo Layout
 

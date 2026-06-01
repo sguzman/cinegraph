@@ -21,7 +21,7 @@ Last reviewed: 2026-05-31
 - [x] Implement `cinegraph lookup title <query>`
 - [x] Implement `cinegraph lookup person <query>`
 - [x] Implement `cinegraph doctor`
-- [x] Create the `.data/` directory layout for raw files, blobs, DB, logs, and reserved index/graph directories
+- [x] Create the runtime cache directory layout for raw files, blobs, DB, logs, and reserved index/graph directories
 - [x] Use SQLite as the canonical embedded warehouse
 - [x] Create metadata tables for `datasets`, `download_artifacts`, and `import_runs`
 - [x] Create film tables for `titles`, `people`, `title_ratings`, `title_akas`, `title_crew`, `credits`, and `episode_edges`
