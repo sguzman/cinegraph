@@ -125,7 +125,47 @@ pub async fn try_begin_import_run(
     .bind(importer_version)
     .execute(pool)
     .await?;
-    Ok(result.rows_affected() == 1)
+    if result.rows_affected() == 1 {
+        return Ok(true);
+    }
+
+    let existing: Option<(String,)> = sqlx::query_as(
+        r#"
+        SELECT status
+        FROM import_runs
+        WHERE artifact_id = ? AND importer_name = ? AND importer_version = ?
+        "#,
+    )
+    .bind(artifact_id)
+    .bind(importer_name)
+    .bind(importer_version)
+    .fetch_optional(pool)
+    .await?;
+
+    if matches!(existing.as_ref().map(|row| row.0.as_str()), Some("failed")) {
+        sqlx::query(
+            r#"
+            UPDATE import_runs
+            SET status = 'running',
+                started_at = CURRENT_TIMESTAMP,
+                finished_at = NULL,
+                rows_seen = 0,
+                rows_inserted = 0,
+                rows_updated = 0,
+                rows_skipped = 0,
+                error_message = NULL
+            WHERE artifact_id = ? AND importer_name = ? AND importer_version = ?
+            "#,
+        )
+        .bind(artifact_id)
+        .bind(importer_name)
+        .bind(importer_version)
+        .execute(pool)
+        .await?;
+        return Ok(true);
+    }
+
+    Ok(false)
 }
 
 pub async fn finish_import_run(

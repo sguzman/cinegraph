@@ -187,21 +187,27 @@ impl<'a> ImdbImporter<'a> {
         for row in read_gzip_tsv::<TitleRatingsRow>(path)? {
             let row = row?;
             stats.rows_seen += 1;
-            sqlx::query(
+            let result = sqlx::query(
                 r#"
                 INSERT INTO title_ratings (imdb_id, average_rating, num_votes)
-                VALUES (?, ?, ?)
+                SELECT ?, ?, ?
+                WHERE EXISTS (SELECT 1 FROM titles WHERE imdb_id = ?)
                 ON CONFLICT(imdb_id) DO UPDATE SET
                     average_rating = excluded.average_rating,
                     num_votes = excluded.num_votes
                 "#,
             )
-            .bind(row.imdb_id)
+            .bind(&row.imdb_id)
             .bind(parse_f64(imdb_null(&row.average_rating)))
             .bind(parse_i64(imdb_null(&row.num_votes)))
+            .bind(&row.imdb_id)
             .execute(&mut *tx)
             .await?;
-            stats.rows_inserted += 1;
+            if result.rows_affected() == 0 {
+                stats.rows_skipped += 1;
+            } else {
+                stats.rows_inserted += 1;
+            }
         }
         tx.commit().await?;
         Ok(stats)
@@ -213,10 +219,11 @@ impl<'a> ImdbImporter<'a> {
         for row in read_gzip_tsv::<TitleAkasRow>(path)? {
             let row = row?;
             stats.rows_seen += 1;
-            sqlx::query(
+            let result = sqlx::query(
                 r#"
                 INSERT INTO title_akas (imdb_id, ordering, title, region, language, types, attributes, is_original_title)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE EXISTS (SELECT 1 FROM titles WHERE imdb_id = ?)
                 ON CONFLICT(imdb_id, ordering, title) DO UPDATE SET
                     region = excluded.region,
                     language = excluded.language,
@@ -225,7 +232,7 @@ impl<'a> ImdbImporter<'a> {
                     is_original_title = excluded.is_original_title
                 "#,
             )
-            .bind(row.imdb_id)
+            .bind(&row.imdb_id)
             .bind(parse_i64(imdb_null(&row.ordering)))
             .bind(row.title)
             .bind(imdb_null(&row.region))
@@ -233,9 +240,14 @@ impl<'a> ImdbImporter<'a> {
             .bind(imdb_null(&row.types))
             .bind(imdb_null(&row.attributes))
             .bind(parse_i64(imdb_null(&row.is_original_title)))
+            .bind(&row.imdb_id)
             .execute(&mut *tx)
             .await?;
-            stats.rows_inserted += 1;
+            if result.rows_affected() == 0 {
+                stats.rows_skipped += 1;
+            } else {
+                stats.rows_inserted += 1;
+            }
         }
         tx.commit().await?;
         Ok(stats)
@@ -247,10 +259,11 @@ impl<'a> ImdbImporter<'a> {
         for row in read_gzip_tsv::<TitleCrewRow>(path)? {
             let row = row?;
             stats.rows_seen += 1;
-            sqlx::query(
+            let result = sqlx::query(
                 r#"
                 INSERT INTO title_crew (imdb_id, directors, writers)
-                VALUES (?, ?, ?)
+                SELECT ?, ?, ?
+                WHERE EXISTS (SELECT 1 FROM titles WHERE imdb_id = ?)
                 ON CONFLICT(imdb_id) DO UPDATE SET
                     directors = excluded.directors,
                     writers = excluded.writers
@@ -259,11 +272,16 @@ impl<'a> ImdbImporter<'a> {
             .bind(&row.imdb_id)
             .bind(imdb_null(&row.directors))
             .bind(imdb_null(&row.writers))
+            .bind(&row.imdb_id)
             .execute(&mut *tx)
             .await?;
 
-            insert_credit_list(&mut tx, &row.imdb_id, imdb_null(&row.directors), "director")
-                .await?;
+            if result.rows_affected() == 0 {
+                stats.rows_skipped += 1;
+                continue;
+            }
+
+            insert_credit_list(&mut tx, &row.imdb_id, imdb_null(&row.directors), "director").await?;
             insert_credit_list(&mut tx, &row.imdb_id, imdb_null(&row.writers), "writer").await?;
             stats.rows_inserted += 1;
         }
@@ -277,24 +295,32 @@ impl<'a> ImdbImporter<'a> {
         for row in read_gzip_tsv::<TitlePrincipalsRow>(path)? {
             let row = row?;
             stats.rows_seen += 1;
-            sqlx::query(
+            let result = sqlx::query(
                 r#"
                 INSERT INTO credits (imdb_id, imdb_name_id, ordering, category, job, characters, source)
-                VALUES (?, ?, ?, ?, ?, ?, 'imdb')
+                SELECT ?, ?, ?, ?, ?, ?, 'imdb'
+                WHERE EXISTS (SELECT 1 FROM titles WHERE imdb_id = ?)
+                  AND EXISTS (SELECT 1 FROM people WHERE imdb_name_id = ?)
                 ON CONFLICT(imdb_id, imdb_name_id, ordering, category, source) DO UPDATE SET
                     job = excluded.job,
                     characters = excluded.characters
                 "#,
             )
-            .bind(row.imdb_id)
-            .bind(row.imdb_name_id)
+            .bind(&row.imdb_id)
+            .bind(&row.imdb_name_id)
             .bind(parse_i64(imdb_null(&row.ordering)))
             .bind(row.category)
             .bind(imdb_null(&row.job))
             .bind(imdb_null(&row.characters))
+            .bind(&row.imdb_id)
+            .bind(&row.imdb_name_id)
             .execute(&mut *tx)
             .await?;
-            stats.rows_inserted += 1;
+            if result.rows_affected() == 0 {
+                stats.rows_skipped += 1;
+            } else {
+                stats.rows_inserted += 1;
+            }
         }
         tx.commit().await?;
         Ok(stats)
@@ -306,23 +332,31 @@ impl<'a> ImdbImporter<'a> {
         for row in read_gzip_tsv::<TitleEpisodeRow>(path)? {
             let row = row?;
             stats.rows_seen += 1;
-            sqlx::query(
+            let result = sqlx::query(
                 r#"
                 INSERT INTO episode_edges (imdb_id, parent_imdb_id, season_number, episode_number)
-                VALUES (?, ?, ?, ?)
+                SELECT ?, ?, ?, ?
+                WHERE EXISTS (SELECT 1 FROM titles WHERE imdb_id = ?)
+                  AND EXISTS (SELECT 1 FROM titles WHERE imdb_id = ?)
                 ON CONFLICT(imdb_id) DO UPDATE SET
                     parent_imdb_id = excluded.parent_imdb_id,
                     season_number = excluded.season_number,
                     episode_number = excluded.episode_number
                 "#,
             )
-            .bind(row.imdb_id)
-            .bind(row.parent_imdb_id)
+            .bind(&row.imdb_id)
+            .bind(&row.parent_imdb_id)
             .bind(parse_i64(imdb_null(&row.season_number)))
             .bind(parse_i64(imdb_null(&row.episode_number)))
+            .bind(&row.imdb_id)
+            .bind(&row.parent_imdb_id)
             .execute(&mut *tx)
             .await?;
-            stats.rows_inserted += 1;
+            if result.rows_affected() == 0 {
+                stats.rows_skipped += 1;
+            } else {
+                stats.rows_inserted += 1;
+            }
         }
         tx.commit().await?;
         Ok(stats)
@@ -340,7 +374,9 @@ async fn insert_credit_list(
             sqlx::query(
                 r#"
                 INSERT INTO credits (imdb_id, imdb_name_id, ordering, category, source)
-                VALUES (?, ?, ?, ?, 'imdb')
+                SELECT ?, ?, ?, ?, 'imdb'
+                WHERE EXISTS (SELECT 1 FROM titles WHERE imdb_id = ?)
+                  AND EXISTS (SELECT 1 FROM people WHERE imdb_name_id = ?)
                 ON CONFLICT(imdb_id, imdb_name_id, ordering, category, source) DO NOTHING
                 "#,
             )
@@ -348,6 +384,8 @@ async fn insert_credit_list(
             .bind(person_id)
             .bind(index as i64 + 1)
             .bind(category)
+            .bind(imdb_id)
+            .bind(person_id)
             .execute(&mut **tx)
             .await?;
         }
