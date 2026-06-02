@@ -2,9 +2,9 @@ use cinegraph_core::Result;
 use sqlx::Row;
 
 use crate::models::{
-    Dataset, DownloadArtifact, GraphCredit, GraphEpisode, GraphPerson, GraphRating, GraphTitle,
-    GraphWikidataClaim, GraphWikidataLink, IndexablePerson, IndexableTitle, LookupPerson,
-    LookupTitle, PendingTmdbMovieHydration, TmdbMovieExportEntry,
+    Dataset, DownloadArtifact, GraphCollaborationRow, GraphCredit, GraphEpisode, GraphNeighborRow,
+    GraphPerson, GraphRating, GraphTitle, GraphWikidataClaim, GraphWikidataLink, IndexablePerson,
+    IndexableTitle, LookupPerson, LookupTitle, PendingTmdbMovieHydration, TmdbMovieExportEntry,
 };
 
 pub async fn upsert_dataset(
@@ -524,6 +524,204 @@ pub async fn title_ratings_for_graph_page(
     .bind(last_imdb_id)
     .bind(last_imdb_id)
     .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn title_neighbors(
+    pool: &sqlx::SqlitePool,
+    imdb_id: &str,
+) -> Result<Vec<GraphNeighborRow>> {
+    let rows = sqlx::query_as::<_, GraphNeighborRow>(
+        r#"
+        SELECT DISTINCT direction, predicate, entity_id, entity_name
+        FROM (
+            SELECT
+                'out' AS direction,
+                'participant' AS predicate,
+                p.imdb_name_id AS entity_id,
+                p.primary_name AS entity_name,
+                p.primary_name AS sort_name
+            FROM credits c
+            JOIN people p ON p.imdb_name_id = c.imdb_name_id
+            WHERE c.imdb_id = ?
+
+            UNION ALL
+
+            SELECT
+                'out' AS direction,
+                CASE c.category
+                    WHEN 'director' THEN 'director'
+                    WHEN 'actor' THEN 'actor'
+                    WHEN 'actress' THEN 'actor'
+                    WHEN 'writer' THEN 'writer'
+                    WHEN 'producer' THEN 'producer'
+                END AS predicate,
+                p.imdb_name_id AS entity_id,
+                p.primary_name AS entity_name,
+                p.primary_name AS sort_name
+            FROM credits c
+            JOIN people p ON p.imdb_name_id = c.imdb_name_id
+            WHERE c.imdb_id = ?
+              AND c.category IN ('director', 'actor', 'actress', 'writer', 'producer')
+
+            UNION ALL
+
+            SELECT
+                'out' AS direction,
+                'partOfSeries' AS predicate,
+                t.imdb_id AS entity_id,
+                t.primary_title AS entity_name,
+                t.primary_title AS sort_name
+            FROM episode_edges e
+            JOIN titles t ON t.imdb_id = e.parent_imdb_id
+            WHERE e.imdb_id = ?
+
+            UNION ALL
+
+            SELECT
+                'in' AS direction,
+                'partOfSeries' AS predicate,
+                t.imdb_id AS entity_id,
+                t.primary_title AS entity_name,
+                t.primary_title AS sort_name
+            FROM episode_edges e
+            JOIN titles t ON t.imdb_id = e.imdb_id
+            WHERE e.parent_imdb_id = ?
+
+            UNION ALL
+
+            SELECT
+                'out' AS direction,
+                'sameAs' AS predicate,
+                l.wikidata_id AS entity_id,
+                COALESCE(e.label, l.wikidata_id) AS entity_name,
+                COALESCE(e.label, l.wikidata_id) AS sort_name
+            FROM title_wikidata_links l
+            LEFT JOIN wikidata_entities e ON e.wikidata_id = l.wikidata_id
+            WHERE l.imdb_id = ?
+
+            UNION ALL
+
+            SELECT
+                'out' AS direction,
+                'averageRating' AS predicate,
+                CAST(r.average_rating AS TEXT) AS entity_id,
+                CAST(r.average_rating AS TEXT) AS entity_name,
+                CAST(r.average_rating AS TEXT) AS sort_name
+            FROM title_ratings r
+            WHERE r.imdb_id = ?
+              AND r.average_rating IS NOT NULL
+
+            UNION ALL
+
+            SELECT
+                'out' AS direction,
+                'voteCount' AS predicate,
+                CAST(r.num_votes AS TEXT) AS entity_id,
+                CAST(r.num_votes AS TEXT) AS entity_name,
+                CAST(r.num_votes AS TEXT) AS sort_name
+            FROM title_ratings r
+            WHERE r.imdb_id = ?
+              AND r.num_votes IS NOT NULL
+        )
+        ORDER BY direction, predicate, sort_name, entity_id
+        "#,
+    )
+    .bind(imdb_id)
+    .bind(imdb_id)
+    .bind(imdb_id)
+    .bind(imdb_id)
+    .bind(imdb_id)
+    .bind(imdb_id)
+    .bind(imdb_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn person_neighbors(
+    pool: &sqlx::SqlitePool,
+    imdb_name_id: &str,
+) -> Result<Vec<GraphNeighborRow>> {
+    let rows = sqlx::query_as::<_, GraphNeighborRow>(
+        r#"
+        SELECT DISTINCT direction, predicate, entity_id, entity_name
+        FROM (
+            SELECT
+                'in' AS direction,
+                'participant' AS predicate,
+                t.imdb_id AS entity_id,
+                t.primary_title AS entity_name,
+                t.primary_title AS sort_name
+            FROM credits c
+            JOIN titles t ON t.imdb_id = c.imdb_id
+            WHERE c.imdb_name_id = ?
+
+            UNION ALL
+
+            SELECT
+                'in' AS direction,
+                CASE c.category
+                    WHEN 'director' THEN 'director'
+                    WHEN 'actor' THEN 'actor'
+                    WHEN 'actress' THEN 'actor'
+                    WHEN 'writer' THEN 'writer'
+                    WHEN 'producer' THEN 'producer'
+                END AS predicate,
+                t.imdb_id AS entity_id,
+                t.primary_title AS entity_name,
+                t.primary_title AS sort_name
+            FROM credits c
+            JOIN titles t ON t.imdb_id = c.imdb_id
+            WHERE c.imdb_name_id = ?
+              AND c.category IN ('director', 'actor', 'actress', 'writer', 'producer')
+
+            UNION ALL
+
+            SELECT
+                'out' AS direction,
+                'sameAs' AS predicate,
+                l.wikidata_id AS entity_id,
+                COALESCE(e.label, l.wikidata_id) AS entity_name,
+                COALESCE(e.label, l.wikidata_id) AS sort_name
+            FROM person_wikidata_links l
+            LEFT JOIN wikidata_entities e ON e.wikidata_id = l.wikidata_id
+            WHERE l.imdb_name_id = ?
+        )
+        ORDER BY direction, predicate, sort_name, entity_id
+        "#,
+    )
+    .bind(imdb_name_id)
+    .bind(imdb_name_id)
+    .bind(imdb_name_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn graph_collaborations(
+    pool: &sqlx::SqlitePool,
+    imdb_name_id: &str,
+) -> Result<Vec<GraphCollaborationRow>> {
+    let rows = sqlx::query_as::<_, GraphCollaborationRow>(
+        r#"
+        SELECT
+            other.imdb_name_id AS person_id,
+            p.primary_name AS person_name,
+            COUNT(DISTINCT base.imdb_id) AS shared_titles
+        FROM credits base
+        JOIN credits other
+          ON other.imdb_id = base.imdb_id
+         AND other.imdb_name_id != base.imdb_name_id
+        JOIN people p ON p.imdb_name_id = other.imdb_name_id
+        WHERE base.imdb_name_id = ?
+        GROUP BY other.imdb_name_id, p.primary_name
+        ORDER BY shared_titles DESC, p.primary_name ASC, other.imdb_name_id ASC
+        "#,
+    )
+    .bind(imdb_name_id)
     .fetch_all(pool)
     .await?;
     Ok(rows)

@@ -51,4 +51,4 @@ These facts are projected into the Oxigraph store when you run:
 cargo run -- index graph
 ```
 
-After that, `graph neighbors`, `graph query`, `graph stats`, and other graph commands can traverse both local Cinegraph entities and linked Wikidata entities. If you want a live full-store aggregate refresh instead of the cached summary, run `graph stats-heavy`.
+After that, `graph query` continues to read from the Oxigraph store directly. For interactive CLI use, `graph neighbors` and `graph collaborations` now use SQLite-backed fast paths that still surface linked Wikidata entities, while `graph neighbors-heavy` and `graph collaborations-heavy` keep the live Oxigraph-backed path. If you want a live full-store aggregate refresh instead of the cached summary, run `graph stats-heavy`.

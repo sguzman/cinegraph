@@ -82,7 +82,9 @@ pub enum SearchCommands {
 pub enum GraphCommands {
     Query { sparql_file: PathBuf },
     Neighbors { entity_id: String },
+    NeighborsHeavy { entity_id: String },
     Collaborations { person_id: String },
+    CollaborationsHeavy { person_id: String },
     Stats,
     StatsHeavy,
 }
@@ -147,6 +149,30 @@ mod tests {
             cli.command,
             Commands::Graph {
                 command: GraphCommands::Query { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_graph_neighbors_heavy_command() {
+        let cli = Cli::try_parse_from(["cinegraph", "graph", "neighbors-heavy", "nm0000001"])
+            .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Graph {
+                command: GraphCommands::NeighborsHeavy { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_graph_collaborations_heavy_command() {
+        let cli = Cli::try_parse_from(["cinegraph", "graph", "collaborations-heavy", "nm1"])
+            .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Graph {
+                command: GraphCommands::CollaborationsHeavy { .. }
             }
         ));
     }

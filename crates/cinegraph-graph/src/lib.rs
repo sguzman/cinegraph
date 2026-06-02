@@ -257,7 +257,42 @@ impl GraphService {
         Ok(stats)
     }
 
-    pub fn neighbors(&self, entity_id: &str) -> Result<Vec<GraphNeighbor>> {
+    pub async fn neighbors_fast(db: &Database, entity_id: &str) -> Result<Vec<GraphNeighbor>> {
+        let rows = if entity_id.starts_with("tt") {
+            queries::title_neighbors(db.pool(), entity_id).await?
+        } else if entity_id.starts_with("nm") {
+            queries::person_neighbors(db.pool(), entity_id).await?
+        } else {
+            Vec::new()
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|row| GraphNeighbor {
+                direction: row.direction,
+                predicate: row.predicate,
+                entity_id: row.entity_id,
+                entity_name: row.entity_name,
+            })
+            .collect())
+    }
+
+    pub async fn collaborations_fast(
+        db: &Database,
+        person_id: &str,
+    ) -> Result<Vec<CollaborationHit>> {
+        let rows = queries::graph_collaborations(db.pool(), person_id).await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| CollaborationHit {
+                person_id: row.person_id,
+                person_name: row.person_name,
+                shared_titles: row.shared_titles.max(0) as usize,
+            })
+            .collect())
+    }
+
+    pub fn neighbors_heavy(&self, entity_id: &str) -> Result<Vec<GraphNeighbor>> {
         let entity_iri = self.entity_iri(entity_id);
         let query = format!(
             "PREFIX schema: <https://schema.org/>
@@ -315,7 +350,7 @@ impl GraphService {
         Ok(neighbors)
     }
 
-    pub fn collaborations(&self, person_id: &str) -> Result<Vec<CollaborationHit>> {
+    pub fn collaborations_heavy(&self, person_id: &str) -> Result<Vec<CollaborationHit>> {
         let person_iri = self.entity_iri(person_id);
         let query = format!(
             "PREFIX schema: <https://schema.org/>
@@ -936,7 +971,12 @@ impl GraphService {
 
             write_quad(
                 serializer,
-                Quad::new(subject, predicate.clone(), object, GraphNameRef::DefaultGraph),
+                Quad::new(
+                    subject,
+                    predicate.clone(),
+                    object,
+                    GraphNameRef::DefaultGraph,
+                ),
             )?;
             stats.wikidata_claim_triples_written += 1;
             record_predicate(stats, &predicate);
@@ -1283,7 +1323,9 @@ mod tests {
         };
         assert_eq!(rows.len(), 2);
 
-        let neighbors = service.neighbors("nm1").expect("neighbors");
+        let neighbors = GraphService::neighbors_fast(&db, "nm1")
+            .await
+            .expect("neighbors");
         assert!(neighbors.iter().any(|neighbor| neighbor.entity_id == "tt1"));
         assert!(neighbors.iter().any(|neighbor| neighbor.entity_id == "tt2"));
         assert!(neighbors.iter().any(|neighbor| neighbor.entity_id == "tt3"));
@@ -1293,22 +1335,45 @@ mod tests {
                 .any(|neighbor| neighbor.entity_id == "Q1000")
         );
 
-        let title_neighbors = service.neighbors("tt1").expect("title neighbors");
+        let title_neighbors = GraphService::neighbors_fast(&db, "tt1")
+            .await
+            .expect("title neighbors");
         assert!(
-            title_neighbors.iter().any(
-                |neighbor| neighbor.entity_id == "Q2001" && neighbor.entity_name == "jidaigeki"
-            )
+            title_neighbors
+                .iter()
+                .any(|neighbor| neighbor.entity_id == "Q2000" && neighbor.predicate == "sameAs")
         );
         assert!(
             title_neighbors
                 .iter()
                 .any(|neighbor| neighbor.entity_id == "tt3" && neighbor.predicate == "partOfSeries")
         );
+        assert!(
+            title_neighbors.iter().any(
+                |neighbor| neighbor.predicate == "averageRating" && neighbor.entity_id == "8.6"
+            )
+        );
 
-        let collaborations = service.collaborations("nm1").expect("collabs");
+        let heavy_neighbors = service.neighbors_heavy("nm1").expect("heavy neighbors");
+        assert!(
+            heavy_neighbors
+                .iter()
+                .any(|neighbor| neighbor.entity_id == "tt1")
+        );
+
+        let collaborations = GraphService::collaborations_fast(&db, "nm1")
+            .await
+            .expect("collabs");
         assert_eq!(collaborations.len(), 1);
         assert_eq!(collaborations[0].person_id, "nm2");
         assert_eq!(collaborations[0].shared_titles, 2);
+
+        let heavy_collaborations = service
+            .collaborations_heavy("nm1")
+            .expect("heavy collaborations");
+        assert_eq!(heavy_collaborations.len(), 1);
+        assert_eq!(heavy_collaborations[0].person_id, "nm2");
+        assert_eq!(heavy_collaborations[0].shared_titles, 2);
 
         let graph_stats = service.stats().expect("graph stats");
         assert_eq!(graph_stats.title_nodes, 3);

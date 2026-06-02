@@ -145,13 +145,21 @@ async fn run_command(
                 println!("{}", serde_json::to_string_pretty(&output)?);
             }
             GraphCommands::Neighbors { entity_id } => {
+                let output = GraphService::neighbors_fast(db, &entity_id).await?;
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
+            GraphCommands::NeighborsHeavy { entity_id } => {
                 let service = GraphService::open(config, paths)?;
-                let output = service.neighbors(&entity_id)?;
+                let output = service.neighbors_heavy(&entity_id)?;
                 println!("{}", serde_json::to_string_pretty(&output)?);
             }
             GraphCommands::Collaborations { person_id } => {
+                let output = GraphService::collaborations_fast(db, &person_id).await?;
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
+            GraphCommands::CollaborationsHeavy { person_id } => {
                 let service = GraphService::open(config, paths)?;
-                let output = service.collaborations(&person_id)?;
+                let output = service.collaborations_heavy(&person_id)?;
                 println!("{}", serde_json::to_string_pretty(&output)?);
             }
             GraphCommands::Stats => {
@@ -219,7 +227,9 @@ fn command_name(command: &Commands) -> &'static str {
         Commands::Graph { command } => match command {
             GraphCommands::Query { .. } => "graph query",
             GraphCommands::Neighbors { .. } => "graph neighbors",
+            GraphCommands::NeighborsHeavy { .. } => "graph neighbors-heavy",
             GraphCommands::Collaborations { .. } => "graph collaborations",
+            GraphCommands::CollaborationsHeavy { .. } => "graph collaborations-heavy",
             GraphCommands::Stats => "graph stats",
             GraphCommands::StatsHeavy => "graph stats-heavy",
         },

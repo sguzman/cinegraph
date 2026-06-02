@@ -106,6 +106,21 @@ pub struct GraphRating {
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
+pub struct GraphNeighborRow {
+    pub direction: String,
+    pub predicate: String,
+    pub entity_id: String,
+    pub entity_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct GraphCollaborationRow {
+    pub person_id: String,
+    pub person_name: String,
+    pub shared_titles: i64,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
 pub struct TmdbMovieExportEntry {
     pub id: i64,
     pub export_artifact_id: i64,
