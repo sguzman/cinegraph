@@ -159,6 +159,11 @@ async fn run_command(
                 let output = service.stats()?;
                 println!("{}", serde_json::to_string_pretty(&output)?);
             }
+            GraphCommands::StatsHeavy => {
+                let service = GraphService::open(config, paths)?;
+                let output = service.stats_heavy()?;
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
         },
         Commands::Lookup { command } => match command {
             LookupCommands::Title { query } => {
@@ -216,6 +221,7 @@ fn command_name(command: &Commands) -> &'static str {
             GraphCommands::Neighbors { .. } => "graph neighbors",
             GraphCommands::Collaborations { .. } => "graph collaborations",
             GraphCommands::Stats => "graph stats",
+            GraphCommands::StatsHeavy => "graph stats-heavy",
         },
         Commands::Lookup { command } => match command {
             LookupCommands::Title { .. } => "lookup title",

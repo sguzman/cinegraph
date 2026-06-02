@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File},
     io::{BufWriter, Write},
     path::{Path, PathBuf},
@@ -13,7 +13,7 @@ use oxigraph::{
     sparql::QueryResults,
     store::Store,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::info;
 
 const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
@@ -45,6 +45,8 @@ pub struct GraphBuildStats {
     pub wikidata_link_triples_written: usize,
     pub wikidata_claim_triples_written: usize,
     pub total_triples_written: usize,
+    pub wikidata_entities_projected: usize,
+    pub predicate_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,13 +64,15 @@ pub struct CollaborationHit {
     pub shared_titles: usize,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphStoreStats {
     pub total_triples: usize,
     pub title_nodes: usize,
     pub person_nodes: usize,
     pub wikidata_entities: usize,
     pub predicate_counts: BTreeMap<String, usize>,
+    pub store_bytes: u64,
+    pub store_path: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,6 +93,7 @@ pub enum GraphQueryOutput {
 pub struct GraphService {
     store: Store,
     store_path: PathBuf,
+    stats_path: PathBuf,
     temp_dir: PathBuf,
     base_iri: String,
 }
@@ -109,6 +114,7 @@ impl GraphService {
         Ok(Self {
             store,
             store_path: paths.graph_store_dir(),
+            stats_path: paths.graph_stats_path(),
             temp_dir: paths.temp_dir(),
             base_iri: config.graph.base_iri.clone(),
         })
@@ -147,6 +153,17 @@ impl GraphService {
 
         fs::remove_file(&projection_path)?;
 
+        let summary = GraphStoreStats {
+            total_triples: stats.total_triples_written,
+            title_nodes: stats.titles_projected,
+            person_nodes: stats.people_projected,
+            wikidata_entities: stats.wikidata_entities_projected,
+            predicate_counts: stats.predicate_counts.clone(),
+            store_bytes: dir_size(&self.store_path)?,
+            store_path: self.store_path.display().to_string(),
+        };
+        self.write_stats_summary(&summary)?;
+
         info!(
             store_path = %self.store_path.display(),
             total_triples_written = stats.total_triples_written,
@@ -174,6 +191,16 @@ impl GraphService {
     }
 
     pub fn stats(&self) -> Result<GraphStoreStats> {
+        let raw = fs::read_to_string(&self.stats_path).map_err(|error| {
+            CinegraphError::Graph(format!(
+                "cached graph stats unavailable at {}: {error}. Rebuild the graph or run `graph stats-heavy`.",
+                self.stats_path.display()
+            ))
+        })?;
+        serde_json::from_str(&raw).map_err(graph_error)
+    }
+
+    pub fn stats_heavy(&self) -> Result<GraphStoreStats> {
         let total_triples = self.store.len().map_err(graph_error)?;
         let title_nodes = self.count_query(
             "PREFIX schema: <https://schema.org/>
@@ -217,13 +244,17 @@ impl GraphService {
             }
         }
 
-        Ok(GraphStoreStats {
+        let stats = GraphStoreStats {
             total_triples,
             title_nodes,
             person_nodes,
             wikidata_entities,
             predicate_counts,
-        })
+            store_bytes: dir_size(&self.store_path)?,
+            store_path: self.store_path.display().to_string(),
+        };
+        self.write_stats_summary(&stats)?;
+        Ok(stats)
     }
 
     pub fn neighbors(&self, entity_id: &str) -> Result<Vec<GraphNeighbor>> {
@@ -351,6 +382,7 @@ impl GraphService {
         let average_rating_predicate = self.cine_predicate("averageRating")?;
         let vote_count_predicate = self.cine_predicate("voteCount")?;
         let description_predicate = self.cine_predicate("description")?;
+        let mut wikidata_entities = HashSet::new();
 
         let mut last_title_id = None::<String>;
         loop {
@@ -372,6 +404,7 @@ impl GraphService {
                     ),
                 )?;
                 stats.title_triples_written += 1;
+                record_predicate(&mut stats, &rdf_type);
                 write_quad(
                     &mut serializer,
                     Quad::new(
@@ -382,6 +415,7 @@ impl GraphService {
                     ),
                 )?;
                 stats.title_triples_written += 1;
+                record_predicate(&mut stats, &schema_name);
                 write_quad(
                     &mut serializer,
                     Quad::new(
@@ -392,6 +426,7 @@ impl GraphService {
                     ),
                 )?;
                 stats.title_triples_written += 1;
+                record_predicate(&mut stats, &title_type_predicate);
 
                 if let Some(year) = title.start_year {
                     write_quad(
@@ -404,6 +439,7 @@ impl GraphService {
                         ),
                     )?;
                     stats.title_triples_written += 1;
+                    record_predicate(&mut stats, &schema_date_published);
                 }
                 if let Some(original_title) = &title.original_title {
                     write_quad(
@@ -416,6 +452,7 @@ impl GraphService {
                         ),
                     )?;
                     stats.title_triples_written += 1;
+                    record_predicate(&mut stats, &original_title_predicate);
                 }
             }
             stats.titles_projected += rows.len();
@@ -447,6 +484,7 @@ impl GraphService {
                     ),
                 )?;
                 stats.person_triples_written += 1;
+                record_predicate(&mut stats, &rdf_type);
                 write_quad(
                     &mut serializer,
                     Quad::new(
@@ -457,6 +495,7 @@ impl GraphService {
                     ),
                 )?;
                 stats.person_triples_written += 1;
+                record_predicate(&mut stats, &schema_name);
                 if let Some(year) = person.birth_year {
                     write_quad(
                         &mut serializer,
@@ -468,6 +507,7 @@ impl GraphService {
                         ),
                     )?;
                     stats.person_triples_written += 1;
+                    record_predicate(&mut stats, &birth_year_predicate);
                 }
                 if let Some(year) = person.death_year {
                     write_quad(
@@ -480,6 +520,7 @@ impl GraphService {
                         ),
                     )?;
                     stats.person_triples_written += 1;
+                    record_predicate(&mut stats, &death_year_predicate);
                 }
             }
             stats.people_projected += rows.len();
@@ -511,6 +552,7 @@ impl GraphService {
                     ),
                 )?;
                 stats.credit_triples_written += 1;
+                record_predicate(&mut stats, &participant_predicate);
 
                 match credit.category.as_deref() {
                     Some("director") => {
@@ -524,6 +566,7 @@ impl GraphService {
                             ),
                         )?;
                         stats.credit_triples_written += 1;
+                        record_predicate(&mut stats, &schema_director);
                     }
                     Some("actor") | Some("actress") => {
                         write_quad(
@@ -536,6 +579,7 @@ impl GraphService {
                             ),
                         )?;
                         stats.credit_triples_written += 1;
+                        record_predicate(&mut stats, &schema_actor);
                     }
                     Some("writer") => {
                         write_quad(
@@ -548,6 +592,7 @@ impl GraphService {
                             ),
                         )?;
                         stats.credit_triples_written += 1;
+                        record_predicate(&mut stats, &writer_predicate);
                     }
                     Some("producer") => {
                         write_quad(
@@ -560,6 +605,7 @@ impl GraphService {
                             ),
                         )?;
                         stats.credit_triples_written += 1;
+                        record_predicate(&mut stats, &producer_predicate);
                     }
                     _ => {}
                 }
@@ -597,6 +643,7 @@ impl GraphService {
                     ),
                 )?;
                 stats.episode_triples_written += 1;
+                record_predicate(&mut stats, &parent_series_predicate);
                 if let Some(season) = episode.season_number {
                     write_quad(
                         &mut serializer,
@@ -608,6 +655,7 @@ impl GraphService {
                         ),
                     )?;
                     stats.episode_triples_written += 1;
+                    record_predicate(&mut stats, &season_number_predicate);
                 }
                 if let Some(number) = episode.episode_number {
                     write_quad(
@@ -620,6 +668,7 @@ impl GraphService {
                         ),
                     )?;
                     stats.episode_triples_written += 1;
+                    record_predicate(&mut stats, &episode_number_predicate);
                 }
             }
             stats.episode_edges_projected += rows.len();
@@ -655,6 +704,7 @@ impl GraphService {
                         ),
                     )?;
                     stats.rating_triples_written += 1;
+                    record_predicate(&mut stats, &average_rating_predicate);
                 }
                 if let Some(votes) = rating.num_votes {
                     write_quad(
@@ -667,6 +717,7 @@ impl GraphService {
                         ),
                     )?;
                     stats.rating_triples_written += 1;
+                    record_predicate(&mut stats, &vote_count_predicate);
                 }
             }
             stats.ratings_projected += rows.len();
@@ -695,6 +746,7 @@ impl GraphService {
                 &schema_name,
                 &description_predicate,
                 &rows,
+                &mut wikidata_entities,
                 &mut stats,
             )?;
             last_title_link = rows.last().map(|row| row.local_id.clone());
@@ -717,6 +769,7 @@ impl GraphService {
                 &schema_name,
                 &description_predicate,
                 &rows,
+                &mut wikidata_entities,
                 &mut stats,
             )?;
             last_person_link = rows.last().map(|row| row.local_id.clone());
@@ -733,7 +786,13 @@ impl GraphService {
             if rows.is_empty() {
                 break;
             }
-            self.write_wikidata_claim_batch(&mut serializer, &schema_name, &rows, &mut stats)?;
+            self.write_wikidata_claim_batch(
+                &mut serializer,
+                &schema_name,
+                &rows,
+                &mut wikidata_entities,
+                &mut stats,
+            )?;
             last_title_claim_id = rows
                 .last()
                 .map(|row| row.claim_id)
@@ -751,7 +810,13 @@ impl GraphService {
             if rows.is_empty() {
                 break;
             }
-            self.write_wikidata_claim_batch(&mut serializer, &schema_name, &rows, &mut stats)?;
+            self.write_wikidata_claim_batch(
+                &mut serializer,
+                &schema_name,
+                &rows,
+                &mut wikidata_entities,
+                &mut stats,
+            )?;
             last_person_claim_id = rows
                 .last()
                 .map(|row| row.claim_id)
@@ -768,6 +833,7 @@ impl GraphService {
             + stats.rating_triples_written
             + stats.wikidata_link_triples_written
             + stats.wikidata_claim_triples_written;
+        stats.wikidata_entities_projected = wikidata_entities.len();
 
         Ok(stats)
     }
@@ -779,11 +845,13 @@ impl GraphService {
         schema_name: &NamedNode,
         description_predicate: &NamedNode,
         rows: &[cinegraph_db::models::GraphWikidataLink],
+        wikidata_entities: &mut HashSet<String>,
         stats: &mut GraphBuildStats,
     ) -> Result<()> {
         for link in rows {
             let local_node = self.local_node(&link.entity_kind, &link.local_id)?;
             let wikidata_node = self.wikidata_node(&link.wikidata_id)?;
+            wikidata_entities.insert(link.wikidata_id.clone());
             write_quad(
                 serializer,
                 Quad::new(
@@ -794,6 +862,7 @@ impl GraphService {
                 ),
             )?;
             stats.wikidata_link_triples_written += 1;
+            record_predicate(stats, schema_same_as);
 
             if let Some(label) = &link.wikidata_label {
                 write_quad(
@@ -806,6 +875,7 @@ impl GraphService {
                     ),
                 )?;
                 stats.wikidata_link_triples_written += 1;
+                record_predicate(stats, schema_name);
             }
             if let Some(description) = &link.wikidata_description {
                 write_quad(
@@ -818,6 +888,7 @@ impl GraphService {
                     ),
                 )?;
                 stats.wikidata_link_triples_written += 1;
+                record_predicate(stats, description_predicate);
             }
         }
         stats.wikidata_links_projected += rows.len();
@@ -834,6 +905,7 @@ impl GraphService {
         serializer: &mut oxigraph::io::WriterQuadSerializer<W>,
         schema_name: &NamedNode,
         rows: &[cinegraph_db::models::GraphWikidataClaim],
+        wikidata_entities: &mut HashSet<String>,
         stats: &mut GraphBuildStats,
     ) -> Result<()> {
         for claim in rows {
@@ -841,6 +913,7 @@ impl GraphService {
             let predicate = self.wikidata_property_node(&claim.property_id)?;
             let object: Term = if let Some(wikidata_id) = &claim.value_wikidata_id {
                 let wikidata_node = self.wikidata_node(wikidata_id)?;
+                wikidata_entities.insert(wikidata_id.clone());
                 if let Some(label) = &claim.value_wikidata_label {
                     write_quad(
                         serializer,
@@ -852,6 +925,7 @@ impl GraphService {
                         ),
                     )?;
                     stats.wikidata_claim_triples_written += 1;
+                    record_predicate(stats, schema_name);
                 }
                 wikidata_node.into()
             } else if let Some(text) = &claim.value_text {
@@ -862,9 +936,10 @@ impl GraphService {
 
             write_quad(
                 serializer,
-                Quad::new(subject, predicate, object, GraphNameRef::DefaultGraph),
+                Quad::new(subject, predicate.clone(), object, GraphNameRef::DefaultGraph),
             )?;
             stats.wikidata_claim_triples_written += 1;
+            record_predicate(stats, &predicate);
         }
         stats.wikidata_claims_projected += rows.len();
         info!(
@@ -888,6 +963,14 @@ impl GraphService {
             .and_then(|count| count.parse::<usize>().ok())
             .unwrap_or_default();
         Ok(count)
+    }
+
+    fn write_stats_summary(&self, stats: &GraphStoreStats) -> Result<()> {
+        if let Some(parent) = self.stats_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&self.stats_path, serde_json::to_vec_pretty(stats)?)?;
+        Ok(())
     }
 
     fn title_node(&self, imdb_id: &str) -> Result<NamedNode> {
@@ -983,6 +1066,31 @@ fn write_quad<W: Write>(
 ) -> Result<()> {
     serializer.serialize_quad(&quad).map_err(graph_error)?;
     Ok(())
+}
+
+fn record_predicate(stats: &mut GraphBuildStats, predicate: &NamedNode) {
+    *stats
+        .predicate_counts
+        .entry(compact_iri(predicate.as_str()))
+        .or_default() += 1;
+}
+
+fn dir_size(path: &Path) -> Result<u64> {
+    if !path.exists() {
+        return Ok(0);
+    }
+
+    let mut total = 0_u64;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let metadata = entry.metadata()?;
+        if metadata.is_dir() {
+            total += dir_size(&entry.path())?;
+        } else {
+            total += metadata.len();
+        }
+    }
+    Ok(total)
 }
 
 fn sanitize(value: &str) -> String {
@@ -1205,9 +1313,17 @@ mod tests {
         let graph_stats = service.stats().expect("graph stats");
         assert_eq!(graph_stats.title_nodes, 3);
         assert_eq!(graph_stats.person_nodes, 2);
-        assert!(graph_stats.total_triples >= stats.total_triples_written);
+        assert_eq!(graph_stats.total_triples, stats.total_triples_written);
+        assert!(graph_stats.store_bytes > 0);
         assert_eq!(
             graph_stats.predicate_counts.get("participant").copied(),
+            Some(5)
+        );
+
+        let heavy_stats = service.stats_heavy().expect("graph heavy stats");
+        assert_eq!(heavy_stats.total_triples, graph_stats.total_triples);
+        assert_eq!(
+            heavy_stats.predicate_counts.get("participant").copied(),
             Some(5)
         );
     }

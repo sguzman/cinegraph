@@ -63,6 +63,10 @@ impl AppPaths {
         self.root.join("graph").join("oxigraph")
     }
 
+    pub fn graph_stats_path(&self) -> PathBuf {
+        self.root.join("graph").join("stats.json")
+    }
+
     pub fn ensure_dirs(&self, config: &AppConfig) -> std::io::Result<()> {
         for path in [
             self.root.clone(),

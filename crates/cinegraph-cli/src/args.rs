@@ -84,6 +84,7 @@ pub enum GraphCommands {
     Neighbors { entity_id: String },
     Collaborations { person_id: String },
     Stats,
+    StatsHeavy,
 }
 
 #[derive(Debug, Subcommand)]
@@ -146,6 +147,17 @@ mod tests {
             cli.command,
             Commands::Graph {
                 command: GraphCommands::Query { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_graph_stats_heavy_command() {
+        let cli = Cli::try_parse_from(["cinegraph", "graph", "stats-heavy"]).expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Graph {
+                command: GraphCommands::StatsHeavy
             }
         ));
     }
