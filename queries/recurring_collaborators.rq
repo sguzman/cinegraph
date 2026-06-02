@@ -2,8 +2,8 @@ PREFIX schema: <https://schema.org/>
 PREFIX cine: <https://cinegraph.local/>
 
 SELECT ?other ?name (COUNT(DISTINCT ?title) AS ?shared_titles) WHERE {
-  <https://cinegraph.local/person/nm1> cine:creditedOn ?title .
-  ?other cine:creditedOn ?title .
+  ?title cine:participant <https://cinegraph.local/person/nm1> .
+  ?title cine:participant ?other .
   ?other schema:name ?name .
   FILTER(?other != <https://cinegraph.local/person/nm1>)
 }

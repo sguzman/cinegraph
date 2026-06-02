@@ -51,4 +51,4 @@ These facts are projected into the Oxigraph store when you run:
 cargo run -- index graph
 ```
 
-After that, `graph neighbors`, `graph query`, and other graph commands can traverse both local Cinegraph entities and linked Wikidata entities.
+After that, `graph neighbors`, `graph query`, `graph stats`, and other graph commands can traverse both local Cinegraph entities and linked Wikidata entities.

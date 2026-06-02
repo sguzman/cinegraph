@@ -63,6 +63,7 @@ async fn run_command(
                 println!("{}", serde_json::to_string_pretty(&stats)?);
             }
             IndexCommands::Graph => {
+                GraphService::reset_store(paths)?;
                 let service = GraphService::open(config, paths)?;
                 let stats = service.rebuild(db).await?;
                 println!("{}", serde_json::to_string_pretty(&stats)?);
@@ -153,6 +154,11 @@ async fn run_command(
                 let output = service.collaborations(&person_id)?;
                 println!("{}", serde_json::to_string_pretty(&output)?);
             }
+            GraphCommands::Stats => {
+                let service = GraphService::open(config, paths)?;
+                let output = service.stats()?;
+                println!("{}", serde_json::to_string_pretty(&output)?);
+            }
         },
         Commands::Lookup { command } => match command {
             LookupCommands::Title { query } => {
@@ -209,6 +215,7 @@ fn command_name(command: &Commands) -> &'static str {
             GraphCommands::Query { .. } => "graph query",
             GraphCommands::Neighbors { .. } => "graph neighbors",
             GraphCommands::Collaborations { .. } => "graph collaborations",
+            GraphCommands::Stats => "graph stats",
         },
         Commands::Lookup { command } => match command {
             LookupCommands::Title { .. } => "lookup title",

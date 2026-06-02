@@ -84,14 +84,25 @@ pub struct GraphPerson {
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct GraphCredit {
+    pub id: i64,
     pub imdb_id: String,
-    pub primary_title: String,
     pub imdb_name_id: String,
-    pub primary_name: String,
-    pub ordering: Option<i64>,
     pub category: Option<String>,
-    pub job: Option<String>,
-    pub characters: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct GraphEpisode {
+    pub imdb_id: String,
+    pub parent_imdb_id: String,
+    pub season_number: Option<i64>,
+    pub episode_number: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+pub struct GraphRating {
+    pub imdb_id: String,
+    pub average_rating: Option<f64>,
+    pub num_votes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, FromRow)]
@@ -129,6 +140,7 @@ pub struct GraphWikidataLink {
 
 #[derive(Debug, Clone, Serialize, FromRow)]
 pub struct GraphWikidataClaim {
+    pub claim_id: i64,
     pub entity_kind: String,
     pub local_id: String,
     pub subject_wikidata_id: String,

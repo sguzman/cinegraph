@@ -2,9 +2,9 @@ use cinegraph_core::Result;
 use sqlx::Row;
 
 use crate::models::{
-    Dataset, DownloadArtifact, GraphCredit, GraphPerson, GraphTitle, GraphWikidataClaim,
-    GraphWikidataLink, IndexablePerson, IndexableTitle, LookupPerson, LookupTitle,
-    PendingTmdbMovieHydration, TmdbMovieExportEntry,
+    Dataset, DownloadArtifact, GraphCredit, GraphEpisode, GraphPerson, GraphRating, GraphTitle,
+    GraphWikidataClaim, GraphWikidataLink, IndexablePerson, IndexableTitle, LookupPerson,
+    LookupTitle, PendingTmdbMovieHydration, TmdbMovieExportEntry,
 };
 
 pub async fn upsert_dataset(
@@ -416,50 +416,114 @@ pub async fn people_by_ids_in_order(
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
-pub async fn titles_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<GraphTitle>> {
+pub async fn titles_for_graph_page(
+    pool: &sqlx::SqlitePool,
+    last_imdb_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<GraphTitle>> {
     let rows = sqlx::query_as::<_, GraphTitle>(
         r#"
         SELECT imdb_id, primary_title, original_title, title_type, start_year
         FROM titles
+        WHERE (? IS NULL OR imdb_id > ?)
         ORDER BY imdb_id
+        LIMIT ?
         "#,
     )
+    .bind(last_imdb_id)
+    .bind(last_imdb_id)
+    .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)
 }
 
-pub async fn people_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<GraphPerson>> {
+pub async fn people_for_graph_page(
+    pool: &sqlx::SqlitePool,
+    last_imdb_name_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<GraphPerson>> {
     let rows = sqlx::query_as::<_, GraphPerson>(
         r#"
         SELECT imdb_name_id, primary_name, birth_year, death_year
         FROM people
+        WHERE (? IS NULL OR imdb_name_id > ?)
         ORDER BY imdb_name_id
+        LIMIT ?
         "#,
     )
+    .bind(last_imdb_name_id)
+    .bind(last_imdb_name_id)
+    .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)
 }
 
-pub async fn credits_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<GraphCredit>> {
+pub async fn credits_for_graph_page(
+    pool: &sqlx::SqlitePool,
+    last_credit_id: i64,
+    limit: i64,
+) -> Result<Vec<GraphCredit>> {
     let rows = sqlx::query_as::<_, GraphCredit>(
         r#"
         SELECT
+            c.id,
             c.imdb_id,
-            t.primary_title,
             c.imdb_name_id,
-            p.primary_name,
-            c.ordering,
-            c.category,
-            c.job,
-            c.characters
+            c.category
         FROM credits c
-        JOIN titles t ON t.imdb_id = c.imdb_id
-        JOIN people p ON p.imdb_name_id = c.imdb_name_id
-        ORDER BY c.imdb_id, c.ordering, c.imdb_name_id
+        WHERE c.id > ?
+        ORDER BY c.id
+        LIMIT ?
         "#,
     )
+    .bind(last_credit_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn episode_edges_for_graph_page(
+    pool: &sqlx::SqlitePool,
+    last_imdb_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<GraphEpisode>> {
+    let rows = sqlx::query_as::<_, GraphEpisode>(
+        r#"
+        SELECT imdb_id, parent_imdb_id, season_number, episode_number
+        FROM episode_edges
+        WHERE (? IS NULL OR imdb_id > ?)
+        ORDER BY imdb_id
+        LIMIT ?
+        "#,
+    )
+    .bind(last_imdb_id)
+    .bind(last_imdb_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn title_ratings_for_graph_page(
+    pool: &sqlx::SqlitePool,
+    last_imdb_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<GraphRating>> {
+    let rows = sqlx::query_as::<_, GraphRating>(
+        r#"
+        SELECT imdb_id, average_rating, num_votes
+        FROM title_ratings
+        WHERE (? IS NULL OR imdb_id > ?)
+        ORDER BY imdb_id
+        LIMIT ?
+        "#,
+    )
+    .bind(last_imdb_id)
+    .bind(last_imdb_id)
+    .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)
@@ -910,7 +974,11 @@ pub async fn link_person_to_wikidata_entity(
     Ok(result.rows_affected() >= 1)
 }
 
-pub async fn wikidata_links_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<GraphWikidataLink>> {
+pub async fn title_wikidata_links_for_graph_page(
+    pool: &sqlx::SqlitePool,
+    last_local_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<GraphWikidataLink>> {
     let rows = sqlx::query_as::<_, GraphWikidataLink>(
         r#"
         SELECT
@@ -923,7 +991,26 @@ pub async fn wikidata_links_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<Gra
         FROM title_wikidata_links l
         JOIN titles t ON t.imdb_id = l.imdb_id
         JOIN wikidata_entities e ON e.wikidata_id = l.wikidata_id
-        UNION ALL
+        WHERE (? IS NULL OR t.imdb_id > ?)
+        ORDER BY t.imdb_id
+        LIMIT ?
+        "#,
+    )
+    .bind(last_local_id)
+    .bind(last_local_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn person_wikidata_links_for_graph_page(
+    pool: &sqlx::SqlitePool,
+    last_local_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<GraphWikidataLink>> {
+    let rows = sqlx::query_as::<_, GraphWikidataLink>(
+        r#"
         SELECT
             'person' AS entity_kind,
             p.imdb_name_id AS local_id,
@@ -934,18 +1021,28 @@ pub async fn wikidata_links_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<Gra
         FROM person_wikidata_links l
         JOIN people p ON p.imdb_name_id = l.imdb_name_id
         JOIN wikidata_entities e ON e.wikidata_id = l.wikidata_id
-        ORDER BY entity_kind, local_id
+        WHERE (? IS NULL OR p.imdb_name_id > ?)
+        ORDER BY p.imdb_name_id
+        LIMIT ?
         "#,
     )
+    .bind(last_local_id)
+    .bind(last_local_id)
+    .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)
 }
 
-pub async fn wikidata_claims_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<GraphWikidataClaim>> {
+pub async fn title_wikidata_claims_for_graph_page(
+    pool: &sqlx::SqlitePool,
+    last_claim_id: i64,
+    limit: i64,
+) -> Result<Vec<GraphWikidataClaim>> {
     let rows = sqlx::query_as::<_, GraphWikidataClaim>(
         r#"
         SELECT
+            c.id AS claim_id,
             'title' AS entity_kind,
             l.imdb_id AS local_id,
             c.subject_wikidata_id,
@@ -957,8 +1054,27 @@ pub async fn wikidata_claims_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<Gr
         FROM wikidata_claims c
         JOIN title_wikidata_links l ON l.wikidata_id = c.subject_wikidata_id
         LEFT JOIN wikidata_entities v ON v.wikidata_id = c.value_wikidata_id
-        UNION ALL
+        WHERE c.id > ?
+        ORDER BY c.id
+        LIMIT ?
+        "#,
+    )
+    .bind(last_claim_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows)
+}
+
+pub async fn person_wikidata_claims_for_graph_page(
+    pool: &sqlx::SqlitePool,
+    last_claim_id: i64,
+    limit: i64,
+) -> Result<Vec<GraphWikidataClaim>> {
+    let rows = sqlx::query_as::<_, GraphWikidataClaim>(
+        r#"
         SELECT
+            c.id AS claim_id,
             'person' AS entity_kind,
             l.imdb_name_id AS local_id,
             c.subject_wikidata_id,
@@ -970,9 +1086,13 @@ pub async fn wikidata_claims_for_graph(pool: &sqlx::SqlitePool) -> Result<Vec<Gr
         FROM wikidata_claims c
         JOIN person_wikidata_links l ON l.wikidata_id = c.subject_wikidata_id
         LEFT JOIN wikidata_entities v ON v.wikidata_id = c.value_wikidata_id
-        ORDER BY entity_kind, local_id, property_id, value_wikidata_id, value_text
+        WHERE c.id > ?
+        ORDER BY c.id
+        LIMIT ?
         "#,
     )
+    .bind(last_claim_id)
+    .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows)

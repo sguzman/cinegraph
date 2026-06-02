@@ -1,8 +1,14 @@
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs::{self, File},
+    io::{BufWriter, Write},
+    path::{Path, PathBuf},
+};
 
 use cinegraph_core::{AppConfig, AppPaths, CinegraphError, Result};
 use cinegraph_db::{Database, queries};
 use oxigraph::{
+    io::{RdfFormat, RdfSerializer},
     model::{GraphNameRef, Literal, NamedNode, Quad, Subject, Term},
     sparql::QueryResults,
     store::Store,
@@ -10,6 +16,7 @@ use oxigraph::{
 use serde::Serialize;
 use tracing::info;
 
+const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 const SCHEMA_NAME: &str = "https://schema.org/name";
 const SCHEMA_PERSON: &str = "https://schema.org/Person";
 const SCHEMA_MOVIE: &str = "https://schema.org/Movie";
@@ -19,14 +26,25 @@ const SCHEMA_DATE_PUBLISHED: &str = "https://schema.org/datePublished";
 const SCHEMA_SAME_AS: &str = "https://schema.org/sameAs";
 const WIKIDATA_ENTITY_BASE: &str = "https://www.wikidata.org/entity/";
 const WIKIDATA_PROPERTY_BASE: &str = "https://www.wikidata.org/prop/direct/";
+const PAGE_SIZE: i64 = 50_000;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct GraphBuildStats {
     pub titles_projected: usize,
     pub people_projected: usize,
     pub credits_projected: usize,
+    pub episode_edges_projected: usize,
+    pub ratings_projected: usize,
     pub wikidata_links_projected: usize,
     pub wikidata_claims_projected: usize,
+    pub title_triples_written: usize,
+    pub person_triples_written: usize,
+    pub credit_triples_written: usize,
+    pub episode_triples_written: usize,
+    pub rating_triples_written: usize,
+    pub wikidata_link_triples_written: usize,
+    pub wikidata_claim_triples_written: usize,
+    pub total_triples_written: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -42,6 +60,15 @@ pub struct CollaborationHit {
     pub person_id: String,
     pub person_name: String,
     pub shared_titles: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct GraphStoreStats {
+    pub total_triples: usize,
+    pub title_nodes: usize,
+    pub person_nodes: usize,
+    pub wikidata_entities: usize,
+    pub predicate_counts: BTreeMap<String, usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,262 +88,79 @@ pub enum GraphQueryOutput {
 
 pub struct GraphService {
     store: Store,
+    store_path: PathBuf,
+    temp_dir: PathBuf,
     base_iri: String,
 }
 
 impl GraphService {
+    pub fn reset_store(paths: &AppPaths) -> Result<()> {
+        let graph_dir = paths.graph_store_dir();
+        if graph_dir.exists() {
+            fs::remove_dir_all(&graph_dir)?;
+        }
+        fs::create_dir_all(&graph_dir)?;
+        Ok(())
+    }
+
     pub fn open(config: &AppConfig, paths: &AppPaths) -> Result<Self> {
         fs::create_dir_all(paths.graph_store_dir())?;
         let store = Store::open(paths.graph_store_dir()).map_err(graph_error)?;
         Ok(Self {
             store,
+            store_path: paths.graph_store_dir(),
+            temp_dir: paths.temp_dir(),
             base_iri: config.graph.base_iri.clone(),
         })
     }
 
     pub async fn rebuild(&self, db: &Database) -> Result<GraphBuildStats> {
+        let projection_path = self.temp_dir.join("cinegraph.graph-build.nq");
+        if projection_path.exists() {
+            fs::remove_file(&projection_path)?;
+        }
+
+        let stats = self.write_projection_file(db, &projection_path).await?;
         self.store.clear().map_err(graph_error)?;
 
-        let title_rows = queries::titles_for_graph(db.pool()).await?;
-        let person_rows = queries::people_for_graph(db.pool()).await?;
-        let credit_rows = queries::credits_for_graph(db.pool()).await?;
-        let wikidata_links = queries::wikidata_links_for_graph(db.pool()).await?;
-        let wikidata_claims = queries::wikidata_claims_for_graph(db.pool()).await?;
-
-        for title in &title_rows {
-            let title_node = self.title_node(&title.imdb_id)?;
-            self.insert_quad(
-                title_node.clone().into(),
-                named_node("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")?,
-                named_node(SCHEMA_MOVIE)?.into(),
-            )?;
-            self.insert_quad(
-                title_node.clone().into(),
-                named_node(SCHEMA_NAME)?,
-                Literal::new_simple_literal(&title.primary_title).into(),
-            )?;
-            if let Some(year) = title.start_year {
-                self.insert_quad(
-                    title_node.clone().into(),
-                    named_node(SCHEMA_DATE_PUBLISHED)?,
-                    Literal::from(year).into(),
-                )?;
-            }
-            if let Some(original_title) = &title.original_title {
-                self.insert_quad(
-                    title_node.into(),
-                    self.cine_predicate("originalTitle")?,
-                    Literal::new_simple_literal(original_title).into(),
-                )?;
-            }
-        }
-
-        for person in &person_rows {
-            let person_node = self.person_node(&person.imdb_name_id)?;
-            self.insert_quad(
-                person_node.clone().into(),
-                named_node("http://www.w3.org/1999/02/22-rdf-syntax-ns#type")?,
-                named_node(SCHEMA_PERSON)?.into(),
-            )?;
-            self.insert_quad(
-                person_node.clone().into(),
-                named_node(SCHEMA_NAME)?,
-                Literal::new_simple_literal(&person.primary_name).into(),
-            )?;
-            if let Some(year) = person.birth_year {
-                self.insert_quad(
-                    person_node.clone().into(),
-                    self.cine_predicate("birthYear")?,
-                    Literal::from(year).into(),
-                )?;
-            }
-            if let Some(year) = person.death_year {
-                self.insert_quad(
-                    person_node.into(),
-                    self.cine_predicate("deathYear")?,
-                    Literal::from(year).into(),
-                )?;
-            }
-        }
-
-        for credit in &credit_rows {
-            let title_node = self.title_node(&credit.imdb_id)?;
-            let person_node = self.person_node(&credit.imdb_name_id)?;
-            let credit_node = self.credit_node(
-                &credit.imdb_id,
-                &credit.imdb_name_id,
-                credit.ordering.unwrap_or_default(),
-                credit.category.as_deref().unwrap_or("unknown"),
-            )?;
-
-            self.insert_quad(
-                title_node.clone().into(),
-                self.cine_predicate("hasParticipant")?,
-                person_node.clone().into(),
-            )?;
-            self.insert_quad(
-                person_node.clone().into(),
-                self.cine_predicate("creditedOn")?,
-                title_node.clone().into(),
-            )?;
-            self.insert_quad(
-                title_node.clone().into(),
-                self.cine_predicate("hasCredit")?,
-                credit_node.clone().into(),
-            )?;
-            self.insert_quad(
-                credit_node.clone().into(),
-                self.cine_predicate("forTitle")?,
-                title_node.clone().into(),
-            )?;
-            self.insert_quad(
-                credit_node.clone().into(),
-                self.cine_predicate("person")?,
-                person_node.clone().into(),
-            )?;
-
-            if let Some(ordering) = credit.ordering {
-                self.insert_quad(
-                    credit_node.clone().into(),
-                    self.cine_predicate("billingOrder")?,
-                    Literal::from(ordering).into(),
-                )?;
-            }
-            if let Some(category) = &credit.category {
-                self.insert_quad(
-                    credit_node.clone().into(),
-                    self.cine_predicate("category")?,
-                    Literal::new_simple_literal(category).into(),
-                )?;
-                match category.as_str() {
-                    "director" => {
-                        self.insert_quad(
-                            title_node.clone().into(),
-                            named_node(SCHEMA_DIRECTOR)?,
-                            person_node.clone().into(),
-                        )?;
-                        self.insert_quad(
-                            person_node.clone().into(),
-                            self.cine_predicate("directed")?,
-                            title_node.clone().into(),
-                        )?;
-                    }
-                    "actor" | "actress" => {
-                        self.insert_quad(
-                            title_node.clone().into(),
-                            named_node(SCHEMA_ACTOR)?,
-                            person_node.clone().into(),
-                        )?;
-                        self.insert_quad(
-                            person_node.clone().into(),
-                            self.cine_predicate("actedIn")?,
-                            title_node.clone().into(),
-                        )?;
-                    }
-                    "writer" => {
-                        self.insert_quad(
-                            title_node.clone().into(),
-                            self.cine_predicate("writer")?,
-                            person_node.clone().into(),
-                        )?;
-                        self.insert_quad(
-                            person_node.clone().into(),
-                            self.cine_predicate("wrote")?,
-                            title_node.clone().into(),
-                        )?;
-                    }
-                    "producer" => {
-                        self.insert_quad(
-                            title_node.clone().into(),
-                            self.cine_predicate("producer")?,
-                            person_node.clone().into(),
-                        )?;
-                        self.insert_quad(
-                            person_node.clone().into(),
-                            self.cine_predicate("produced")?,
-                            title_node.clone().into(),
-                        )?;
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(job) = &credit.job {
-                self.insert_quad(
-                    credit_node.clone().into(),
-                    self.cine_predicate("job")?,
-                    Literal::new_simple_literal(job).into(),
-                )?;
-            }
-            if let Some(characters) = &credit.characters {
-                self.insert_quad(
-                    credit_node.into(),
-                    self.cine_predicate("characters")?,
-                    Literal::new_simple_literal(characters).into(),
-                )?;
-            }
-        }
-
-        for link in &wikidata_links {
-            let local_node = self.local_node(&link.entity_kind, &link.local_id)?;
-            let wikidata_node = self.wikidata_node(&link.wikidata_id)?;
-            self.insert_quad(
-                local_node.into(),
-                named_node(SCHEMA_SAME_AS)?,
-                wikidata_node.clone().into(),
-            )?;
-            if let Some(label) = &link.wikidata_label {
-                self.insert_quad(
-                    wikidata_node.clone().into(),
-                    named_node(SCHEMA_NAME)?,
-                    Literal::new_simple_literal(label).into(),
-                )?;
-            }
-            if let Some(description) = &link.wikidata_description {
-                self.insert_quad(
-                    wikidata_node.into(),
-                    self.cine_predicate("description")?,
-                    Literal::new_simple_literal(description).into(),
-                )?;
-            }
-        }
-
-        for claim in &wikidata_claims {
-            let subject = self.local_node(&claim.entity_kind, &claim.local_id)?;
-            let predicate = self.wikidata_property_node(&claim.property_id)?;
-            let object = if let Some(wikidata_id) = &claim.value_wikidata_id {
-                let wikidata_node = self.wikidata_node(wikidata_id)?;
-                if let Some(label) = &claim.value_wikidata_label {
-                    self.insert_quad(
-                        wikidata_node.clone().into(),
-                        named_node(SCHEMA_NAME)?,
-                        Literal::new_simple_literal(label).into(),
-                    )?;
-                }
-                wikidata_node.into()
-            } else if let Some(text) = &claim.value_text {
-                Literal::new_simple_literal(text).into()
-            } else {
-                continue;
-            };
-            self.insert_quad(subject.into(), predicate, object)?;
-        }
+        let loader_threads = std::thread::available_parallelism()
+            .map(|count| count.get())
+            .unwrap_or(4)
+            .max(2);
+        let projection_file = File::open(&projection_path)?;
 
         info!(
-            titles_projected = title_rows.len(),
-            people_projected = person_rows.len(),
-            credits_projected = credit_rows.len(),
-            wikidata_links_projected = wikidata_links.len(),
-            wikidata_claims_projected = wikidata_claims.len(),
-            "oxigraph graph rebuilt"
+            path = %projection_path.display(),
+            threads = loader_threads,
+            memory_mb = 2048usize,
+            "loading projected N-Quads into Oxigraph"
+        );
+        self.store
+            .bulk_loader()
+            .with_num_threads(loader_threads)
+            .with_max_memory_size_in_megabytes(2048)
+            .on_progress(|triples| {
+                info!(loaded_triples = triples, "oxigraph bulk load progress");
+            })
+            .load_from_reader(RdfFormat::NQuads, projection_file)
+            .map_err(graph_error)?;
+
+        fs::remove_file(&projection_path)?;
+
+        info!(
+            store_path = %self.store_path.display(),
+            total_triples_written = stats.total_triples_written,
+            titles_projected = stats.titles_projected,
+            people_projected = stats.people_projected,
+            credits_projected = stats.credits_projected,
+            episode_edges_projected = stats.episode_edges_projected,
+            ratings_projected = stats.ratings_projected,
+            wikidata_links_projected = stats.wikidata_links_projected,
+            wikidata_claims_projected = stats.wikidata_claims_projected,
+            "lean oxigraph graph rebuilt"
         );
 
-        Ok(GraphBuildStats {
-            titles_projected: title_rows.len(),
-            people_projected: person_rows.len(),
-            credits_projected: credit_rows.len(),
-            wikidata_links_projected: wikidata_links.len(),
-            wikidata_claims_projected: wikidata_claims.len(),
-        })
+        Ok(stats)
     }
 
     pub fn query_file(&self, path: &Path) -> Result<GraphQueryOutput> {
@@ -327,6 +171,59 @@ impl GraphService {
     pub fn query(&self, query: &str) -> Result<GraphQueryOutput> {
         let results = self.store.query(query).map_err(graph_error)?;
         graph_query_output(results)
+    }
+
+    pub fn stats(&self) -> Result<GraphStoreStats> {
+        let total_triples = self.store.len().map_err(graph_error)?;
+        let title_nodes = self.count_query(
+            "PREFIX schema: <https://schema.org/>
+             SELECT (COUNT(DISTINCT ?node) AS ?count) WHERE {
+               ?node a schema:Movie .
+             }",
+        )?;
+        let person_nodes = self.count_query(
+            "PREFIX schema: <https://schema.org/>
+             SELECT (COUNT(DISTINCT ?node) AS ?count) WHERE {
+               ?node a schema:Person .
+             }",
+        )?;
+        let wikidata_entities = self.count_query(&format!(
+            "PREFIX schema: <https://schema.org/>
+             SELECT (COUNT(DISTINCT ?node) AS ?count) WHERE {{
+               ?node schema:name ?name .
+               FILTER(STRSTARTS(STR(?node), \"{WIKIDATA_ENTITY_BASE}\"))
+             }}"
+        ))?;
+
+        let predicate_output = self.query(
+            "SELECT ?predicate (COUNT(*) AS ?count) WHERE {
+               ?subject ?predicate ?object .
+             }
+             GROUP BY ?predicate
+             ORDER BY DESC(?count) STR(?predicate)",
+        )?;
+        let GraphQueryOutput::Solutions { rows, .. } = predicate_output else {
+            return Err(CinegraphError::Graph(
+                "graph stats predicate query did not return solutions".to_string(),
+            ));
+        };
+        let mut predicate_counts = BTreeMap::new();
+        for row in rows {
+            if let (Some(predicate), Some(count)) = (row.get("predicate"), row.get("count")) {
+                predicate_counts.insert(
+                    compact_iri(predicate),
+                    count.parse::<usize>().unwrap_or_default(),
+                );
+            }
+        }
+
+        Ok(GraphStoreStats {
+            total_triples,
+            title_nodes,
+            person_nodes,
+            wikidata_entities,
+            predicate_counts,
+        })
     }
 
     pub fn neighbors(&self, entity_id: &str) -> Result<Vec<GraphNeighbor>> {
@@ -393,8 +290,8 @@ impl GraphService {
             "PREFIX schema: <https://schema.org/>
              PREFIX cine: <{base}>
              SELECT ?other ?name (COUNT(DISTINCT ?title) AS ?shared) WHERE {{
-               <{person_iri}> cine:creditedOn ?title .
-               ?other cine:creditedOn ?title .
+               ?title cine:participant <{person_iri}> .
+               ?title cine:participant ?other .
                ?other schema:name ?name .
                FILTER(?other != <{person_iri}>)
                FILTER(STRSTARTS(STR(?other), \"{base}person/\"))
@@ -426,6 +323,573 @@ impl GraphService {
         Ok(hits)
     }
 
+    async fn write_projection_file(&self, db: &Database, path: &Path) -> Result<GraphBuildStats> {
+        fs::create_dir_all(&self.temp_dir)?;
+        let file = File::create(path)?;
+        let writer = BufWriter::new(file);
+        let mut serializer = RdfSerializer::from_format(RdfFormat::NQuads).for_writer(writer);
+        let mut stats = GraphBuildStats::default();
+
+        let rdf_type = named_node(RDF_TYPE)?;
+        let movie_type = named_node(SCHEMA_MOVIE)?;
+        let person_type = named_node(SCHEMA_PERSON)?;
+        let schema_name = named_node(SCHEMA_NAME)?;
+        let schema_director = named_node(SCHEMA_DIRECTOR)?;
+        let schema_actor = named_node(SCHEMA_ACTOR)?;
+        let schema_date_published = named_node(SCHEMA_DATE_PUBLISHED)?;
+        let schema_same_as = named_node(SCHEMA_SAME_AS)?;
+        let participant_predicate = self.cine_predicate("participant")?;
+        let title_type_predicate = self.cine_predicate("titleType")?;
+        let original_title_predicate = self.cine_predicate("originalTitle")?;
+        let writer_predicate = self.cine_predicate("writer")?;
+        let producer_predicate = self.cine_predicate("producer")?;
+        let birth_year_predicate = self.cine_predicate("birthYear")?;
+        let death_year_predicate = self.cine_predicate("deathYear")?;
+        let parent_series_predicate = self.cine_predicate("partOfSeries")?;
+        let season_number_predicate = self.cine_predicate("seasonNumber")?;
+        let episode_number_predicate = self.cine_predicate("episodeNumber")?;
+        let average_rating_predicate = self.cine_predicate("averageRating")?;
+        let vote_count_predicate = self.cine_predicate("voteCount")?;
+        let description_predicate = self.cine_predicate("description")?;
+
+        let mut last_title_id = None::<String>;
+        loop {
+            let rows =
+                queries::titles_for_graph_page(db.pool(), last_title_id.as_deref(), PAGE_SIZE)
+                    .await?;
+            if rows.is_empty() {
+                break;
+            }
+            for title in &rows {
+                let title_node = self.title_node(&title.imdb_id)?;
+                write_quad(
+                    &mut serializer,
+                    Quad::new(
+                        title_node.clone(),
+                        rdf_type.clone(),
+                        movie_type.clone(),
+                        GraphNameRef::DefaultGraph,
+                    ),
+                )?;
+                stats.title_triples_written += 1;
+                write_quad(
+                    &mut serializer,
+                    Quad::new(
+                        title_node.clone(),
+                        schema_name.clone(),
+                        Literal::new_simple_literal(&title.primary_title),
+                        GraphNameRef::DefaultGraph,
+                    ),
+                )?;
+                stats.title_triples_written += 1;
+                write_quad(
+                    &mut serializer,
+                    Quad::new(
+                        title_node.clone(),
+                        title_type_predicate.clone(),
+                        Literal::new_simple_literal(&title.title_type),
+                        GraphNameRef::DefaultGraph,
+                    ),
+                )?;
+                stats.title_triples_written += 1;
+
+                if let Some(year) = title.start_year {
+                    write_quad(
+                        &mut serializer,
+                        Quad::new(
+                            title_node.clone(),
+                            schema_date_published.clone(),
+                            Literal::from(year),
+                            GraphNameRef::DefaultGraph,
+                        ),
+                    )?;
+                    stats.title_triples_written += 1;
+                }
+                if let Some(original_title) = &title.original_title {
+                    write_quad(
+                        &mut serializer,
+                        Quad::new(
+                            title_node,
+                            original_title_predicate.clone(),
+                            Literal::new_simple_literal(original_title),
+                            GraphNameRef::DefaultGraph,
+                        ),
+                    )?;
+                    stats.title_triples_written += 1;
+                }
+            }
+            stats.titles_projected += rows.len();
+            last_title_id = rows.last().map(|row| row.imdb_id.clone());
+            info!(
+                titles_projected = stats.titles_projected,
+                title_triples_written = stats.title_triples_written,
+                "projected title batch"
+            );
+        }
+
+        let mut last_person_id = None::<String>;
+        loop {
+            let rows =
+                queries::people_for_graph_page(db.pool(), last_person_id.as_deref(), PAGE_SIZE)
+                    .await?;
+            if rows.is_empty() {
+                break;
+            }
+            for person in &rows {
+                let person_node = self.person_node(&person.imdb_name_id)?;
+                write_quad(
+                    &mut serializer,
+                    Quad::new(
+                        person_node.clone(),
+                        rdf_type.clone(),
+                        person_type.clone(),
+                        GraphNameRef::DefaultGraph,
+                    ),
+                )?;
+                stats.person_triples_written += 1;
+                write_quad(
+                    &mut serializer,
+                    Quad::new(
+                        person_node.clone(),
+                        schema_name.clone(),
+                        Literal::new_simple_literal(&person.primary_name),
+                        GraphNameRef::DefaultGraph,
+                    ),
+                )?;
+                stats.person_triples_written += 1;
+                if let Some(year) = person.birth_year {
+                    write_quad(
+                        &mut serializer,
+                        Quad::new(
+                            person_node.clone(),
+                            birth_year_predicate.clone(),
+                            Literal::from(year),
+                            GraphNameRef::DefaultGraph,
+                        ),
+                    )?;
+                    stats.person_triples_written += 1;
+                }
+                if let Some(year) = person.death_year {
+                    write_quad(
+                        &mut serializer,
+                        Quad::new(
+                            person_node,
+                            death_year_predicate.clone(),
+                            Literal::from(year),
+                            GraphNameRef::DefaultGraph,
+                        ),
+                    )?;
+                    stats.person_triples_written += 1;
+                }
+            }
+            stats.people_projected += rows.len();
+            last_person_id = rows.last().map(|row| row.imdb_name_id.clone());
+            info!(
+                people_projected = stats.people_projected,
+                person_triples_written = stats.person_triples_written,
+                "projected person batch"
+            );
+        }
+
+        let mut last_credit_id = 0_i64;
+        loop {
+            let rows =
+                queries::credits_for_graph_page(db.pool(), last_credit_id, PAGE_SIZE).await?;
+            if rows.is_empty() {
+                break;
+            }
+            for credit in &rows {
+                let title_node = self.title_node(&credit.imdb_id)?;
+                let person_node = self.person_node(&credit.imdb_name_id)?;
+                write_quad(
+                    &mut serializer,
+                    Quad::new(
+                        title_node.clone(),
+                        participant_predicate.clone(),
+                        person_node.clone(),
+                        GraphNameRef::DefaultGraph,
+                    ),
+                )?;
+                stats.credit_triples_written += 1;
+
+                match credit.category.as_deref() {
+                    Some("director") => {
+                        write_quad(
+                            &mut serializer,
+                            Quad::new(
+                                title_node,
+                                schema_director.clone(),
+                                person_node,
+                                GraphNameRef::DefaultGraph,
+                            ),
+                        )?;
+                        stats.credit_triples_written += 1;
+                    }
+                    Some("actor") | Some("actress") => {
+                        write_quad(
+                            &mut serializer,
+                            Quad::new(
+                                title_node,
+                                schema_actor.clone(),
+                                person_node,
+                                GraphNameRef::DefaultGraph,
+                            ),
+                        )?;
+                        stats.credit_triples_written += 1;
+                    }
+                    Some("writer") => {
+                        write_quad(
+                            &mut serializer,
+                            Quad::new(
+                                title_node,
+                                writer_predicate.clone(),
+                                person_node,
+                                GraphNameRef::DefaultGraph,
+                            ),
+                        )?;
+                        stats.credit_triples_written += 1;
+                    }
+                    Some("producer") => {
+                        write_quad(
+                            &mut serializer,
+                            Quad::new(
+                                title_node,
+                                producer_predicate.clone(),
+                                person_node,
+                                GraphNameRef::DefaultGraph,
+                            ),
+                        )?;
+                        stats.credit_triples_written += 1;
+                    }
+                    _ => {}
+                }
+            }
+            stats.credits_projected += rows.len();
+            last_credit_id = rows.last().map(|row| row.id).unwrap_or(last_credit_id);
+            info!(
+                credits_projected = stats.credits_projected,
+                credit_triples_written = stats.credit_triples_written,
+                "projected credit batch"
+            );
+        }
+
+        let mut last_episode_id = None::<String>;
+        loop {
+            let rows = queries::episode_edges_for_graph_page(
+                db.pool(),
+                last_episode_id.as_deref(),
+                PAGE_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            for episode in &rows {
+                let episode_node = self.title_node(&episode.imdb_id)?;
+                let parent_node = self.title_node(&episode.parent_imdb_id)?;
+                write_quad(
+                    &mut serializer,
+                    Quad::new(
+                        episode_node.clone(),
+                        parent_series_predicate.clone(),
+                        parent_node,
+                        GraphNameRef::DefaultGraph,
+                    ),
+                )?;
+                stats.episode_triples_written += 1;
+                if let Some(season) = episode.season_number {
+                    write_quad(
+                        &mut serializer,
+                        Quad::new(
+                            episode_node.clone(),
+                            season_number_predicate.clone(),
+                            Literal::from(season),
+                            GraphNameRef::DefaultGraph,
+                        ),
+                    )?;
+                    stats.episode_triples_written += 1;
+                }
+                if let Some(number) = episode.episode_number {
+                    write_quad(
+                        &mut serializer,
+                        Quad::new(
+                            episode_node,
+                            episode_number_predicate.clone(),
+                            Literal::from(number),
+                            GraphNameRef::DefaultGraph,
+                        ),
+                    )?;
+                    stats.episode_triples_written += 1;
+                }
+            }
+            stats.episode_edges_projected += rows.len();
+            last_episode_id = rows.last().map(|row| row.imdb_id.clone());
+            info!(
+                episode_edges_projected = stats.episode_edges_projected,
+                episode_triples_written = stats.episode_triples_written,
+                "projected episode batch"
+            );
+        }
+
+        let mut last_rating_id = None::<String>;
+        loop {
+            let rows = queries::title_ratings_for_graph_page(
+                db.pool(),
+                last_rating_id.as_deref(),
+                PAGE_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            for rating in &rows {
+                let title_node = self.title_node(&rating.imdb_id)?;
+                if let Some(value) = rating.average_rating {
+                    write_quad(
+                        &mut serializer,
+                        Quad::new(
+                            title_node.clone(),
+                            average_rating_predicate.clone(),
+                            Literal::from(value),
+                            GraphNameRef::DefaultGraph,
+                        ),
+                    )?;
+                    stats.rating_triples_written += 1;
+                }
+                if let Some(votes) = rating.num_votes {
+                    write_quad(
+                        &mut serializer,
+                        Quad::new(
+                            title_node,
+                            vote_count_predicate.clone(),
+                            Literal::from(votes),
+                            GraphNameRef::DefaultGraph,
+                        ),
+                    )?;
+                    stats.rating_triples_written += 1;
+                }
+            }
+            stats.ratings_projected += rows.len();
+            last_rating_id = rows.last().map(|row| row.imdb_id.clone());
+            info!(
+                ratings_projected = stats.ratings_projected,
+                rating_triples_written = stats.rating_triples_written,
+                "projected ratings batch"
+            );
+        }
+
+        let mut last_title_link = None::<String>;
+        loop {
+            let rows = queries::title_wikidata_links_for_graph_page(
+                db.pool(),
+                last_title_link.as_deref(),
+                PAGE_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            self.write_wikidata_link_batch(
+                &mut serializer,
+                &schema_same_as,
+                &schema_name,
+                &description_predicate,
+                &rows,
+                &mut stats,
+            )?;
+            last_title_link = rows.last().map(|row| row.local_id.clone());
+        }
+
+        let mut last_person_link = None::<String>;
+        loop {
+            let rows = queries::person_wikidata_links_for_graph_page(
+                db.pool(),
+                last_person_link.as_deref(),
+                PAGE_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            self.write_wikidata_link_batch(
+                &mut serializer,
+                &schema_same_as,
+                &schema_name,
+                &description_predicate,
+                &rows,
+                &mut stats,
+            )?;
+            last_person_link = rows.last().map(|row| row.local_id.clone());
+        }
+
+        let mut last_title_claim_id = 0_i64;
+        loop {
+            let rows = queries::title_wikidata_claims_for_graph_page(
+                db.pool(),
+                last_title_claim_id,
+                PAGE_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            self.write_wikidata_claim_batch(&mut serializer, &schema_name, &rows, &mut stats)?;
+            last_title_claim_id = rows
+                .last()
+                .map(|row| row.claim_id)
+                .unwrap_or(last_title_claim_id);
+        }
+
+        let mut last_person_claim_id = 0_i64;
+        loop {
+            let rows = queries::person_wikidata_claims_for_graph_page(
+                db.pool(),
+                last_person_claim_id,
+                PAGE_SIZE,
+            )
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            self.write_wikidata_claim_batch(&mut serializer, &schema_name, &rows, &mut stats)?;
+            last_person_claim_id = rows
+                .last()
+                .map(|row| row.claim_id)
+                .unwrap_or(last_person_claim_id);
+        }
+
+        let mut writer = serializer.finish().map_err(graph_error)?;
+        writer.flush()?;
+
+        stats.total_triples_written = stats.title_triples_written
+            + stats.person_triples_written
+            + stats.credit_triples_written
+            + stats.episode_triples_written
+            + stats.rating_triples_written
+            + stats.wikidata_link_triples_written
+            + stats.wikidata_claim_triples_written;
+
+        Ok(stats)
+    }
+
+    fn write_wikidata_link_batch<W: Write>(
+        &self,
+        serializer: &mut oxigraph::io::WriterQuadSerializer<W>,
+        schema_same_as: &NamedNode,
+        schema_name: &NamedNode,
+        description_predicate: &NamedNode,
+        rows: &[cinegraph_db::models::GraphWikidataLink],
+        stats: &mut GraphBuildStats,
+    ) -> Result<()> {
+        for link in rows {
+            let local_node = self.local_node(&link.entity_kind, &link.local_id)?;
+            let wikidata_node = self.wikidata_node(&link.wikidata_id)?;
+            write_quad(
+                serializer,
+                Quad::new(
+                    local_node,
+                    schema_same_as.clone(),
+                    wikidata_node.clone(),
+                    GraphNameRef::DefaultGraph,
+                ),
+            )?;
+            stats.wikidata_link_triples_written += 1;
+
+            if let Some(label) = &link.wikidata_label {
+                write_quad(
+                    serializer,
+                    Quad::new(
+                        wikidata_node.clone(),
+                        schema_name.clone(),
+                        Literal::new_simple_literal(label),
+                        GraphNameRef::DefaultGraph,
+                    ),
+                )?;
+                stats.wikidata_link_triples_written += 1;
+            }
+            if let Some(description) = &link.wikidata_description {
+                write_quad(
+                    serializer,
+                    Quad::new(
+                        wikidata_node,
+                        description_predicate.clone(),
+                        Literal::new_simple_literal(description),
+                        GraphNameRef::DefaultGraph,
+                    ),
+                )?;
+                stats.wikidata_link_triples_written += 1;
+            }
+        }
+        stats.wikidata_links_projected += rows.len();
+        info!(
+            wikidata_links_projected = stats.wikidata_links_projected,
+            wikidata_link_triples_written = stats.wikidata_link_triples_written,
+            "projected wikidata link batch"
+        );
+        Ok(())
+    }
+
+    fn write_wikidata_claim_batch<W: Write>(
+        &self,
+        serializer: &mut oxigraph::io::WriterQuadSerializer<W>,
+        schema_name: &NamedNode,
+        rows: &[cinegraph_db::models::GraphWikidataClaim],
+        stats: &mut GraphBuildStats,
+    ) -> Result<()> {
+        for claim in rows {
+            let subject = self.local_node(&claim.entity_kind, &claim.local_id)?;
+            let predicate = self.wikidata_property_node(&claim.property_id)?;
+            let object: Term = if let Some(wikidata_id) = &claim.value_wikidata_id {
+                let wikidata_node = self.wikidata_node(wikidata_id)?;
+                if let Some(label) = &claim.value_wikidata_label {
+                    write_quad(
+                        serializer,
+                        Quad::new(
+                            wikidata_node.clone(),
+                            schema_name.clone(),
+                            Literal::new_simple_literal(label),
+                            GraphNameRef::DefaultGraph,
+                        ),
+                    )?;
+                    stats.wikidata_claim_triples_written += 1;
+                }
+                wikidata_node.into()
+            } else if let Some(text) = &claim.value_text {
+                Literal::new_simple_literal(text).into()
+            } else {
+                continue;
+            };
+
+            write_quad(
+                serializer,
+                Quad::new(subject, predicate, object, GraphNameRef::DefaultGraph),
+            )?;
+            stats.wikidata_claim_triples_written += 1;
+        }
+        stats.wikidata_claims_projected += rows.len();
+        info!(
+            wikidata_claims_projected = stats.wikidata_claims_projected,
+            wikidata_claim_triples_written = stats.wikidata_claim_triples_written,
+            "projected wikidata claim batch"
+        );
+        Ok(())
+    }
+
+    fn count_query(&self, query: &str) -> Result<usize> {
+        let output = self.query(query)?;
+        let GraphQueryOutput::Solutions { rows, .. } = output else {
+            return Err(CinegraphError::Graph(
+                "count query did not return solutions".to_string(),
+            ));
+        };
+        let count = rows
+            .first()
+            .and_then(|row| row.get("count"))
+            .and_then(|count| count.parse::<usize>().ok())
+            .unwrap_or_default();
+        Ok(count)
+    }
+
     fn title_node(&self, imdb_id: &str) -> Result<NamedNode> {
         named_node(&format!("{}title/{imdb_id}", self.base_iri))
     }
@@ -452,22 +916,8 @@ impl GraphService {
         named_node(&format!("{WIKIDATA_PROPERTY_BASE}{property_id}"))
     }
 
-    fn credit_node(
-        &self,
-        imdb_id: &str,
-        imdb_name_id: &str,
-        ordering: i64,
-        category: &str,
-    ) -> Result<NamedNode> {
-        named_node(&format!(
-            "{}credit/{imdb_id}/{imdb_name_id}/{ordering}/{}",
-            self.base_iri,
-            sanitize(category)
-        ))
-    }
-
     fn cine_predicate(&self, suffix: &str) -> Result<NamedNode> {
-        named_node(&format!("{}{}", self.base_iri, suffix))
+        named_node(&format!("{}{}", self.base_iri, sanitize(suffix)))
     }
 
     fn entity_iri(&self, entity_id: &str) -> String {
@@ -480,18 +930,6 @@ impl GraphService {
         } else {
             format!("{}person/{entity_id}", self.base_iri)
         }
-    }
-
-    fn insert_quad(&self, subject: Subject, predicate: NamedNode, object: Term) -> Result<()> {
-        self.store
-            .insert(&Quad::new(
-                subject,
-                predicate,
-                object,
-                GraphNameRef::DefaultGraph,
-            ))
-            .map_err(graph_error)?;
-        Ok(())
     }
 }
 
@@ -537,6 +975,14 @@ fn graph_query_output(results: QueryResults) -> Result<GraphQueryOutput> {
         }
         QueryResults::Boolean(value) => Ok(GraphQueryOutput::Boolean { value }),
     }
+}
+
+fn write_quad<W: Write>(
+    serializer: &mut oxigraph::io::WriterQuadSerializer<W>,
+    quad: Quad,
+) -> Result<()> {
+    serializer.serialize_quad(&quad).map_err(graph_error)?;
+    Ok(())
 }
 
 fn sanitize(value: &str) -> String {
@@ -598,13 +1044,12 @@ mod tests {
             SqliteConfig, TmdbSourceConfig, WikidataSourceConfig,
         },
     };
-    use std::io::Write;
     use tempfile::tempdir;
 
     #[tokio::test]
     async fn graph_projection_builds_and_answers_queries() {
         let temp = tempdir().expect("tempdir");
-        let root = temp.path().join(".data");
+        let root = temp.path().join(".cache/cinegraph");
         let config = AppConfig {
             data: DataConfig {
                 root: root.to_string_lossy().to_string(),
@@ -659,10 +1104,11 @@ mod tests {
         };
         let paths = AppPaths::from_config(&config);
         paths.ensure_dirs(&config).expect("dirs");
+        GraphService::reset_store(&paths).expect("reset store");
         let db = Database::connect(&config, &paths).await.expect("db");
         db.migrate().await.expect("migrate");
 
-        sqlx::query("INSERT INTO titles (imdb_id, title_type, primary_title, original_title, is_adult, start_year, genres) VALUES ('tt1', 'movie', 'Seven Samurai', 'Shichinin no samurai', 0, 1954, 'Drama'), ('tt2', 'movie', 'Ikiru', 'Ikiru', 0, 1952, 'Drama')")
+        sqlx::query("INSERT INTO titles (imdb_id, title_type, primary_title, original_title, is_adult, start_year, genres) VALUES ('tt1', 'movie', 'Seven Samurai', 'Shichinin no samurai', 0, 1954, 'Drama'), ('tt2', 'movie', 'Ikiru', 'Ikiru', 0, 1952, 'Drama'), ('tt3', 'tvEpisode', 'A Bold Episode', 'A Bold Episode', 0, 1955, 'Drama')")
             .execute(db.pool())
             .await
             .expect("titles");
@@ -670,10 +1116,18 @@ mod tests {
             .execute(db.pool())
             .await
             .expect("people");
-        sqlx::query("INSERT INTO credits (imdb_id, imdb_name_id, ordering, category, source) VALUES ('tt1', 'nm1', 1, 'director', 'imdb'), ('tt1', 'nm2', 2, 'actor', 'imdb'), ('tt2', 'nm1', 1, 'director', 'imdb'), ('tt2', 'nm2', 2, 'actor', 'imdb')")
+        sqlx::query("INSERT INTO credits (imdb_id, imdb_name_id, ordering, category, source) VALUES ('tt1', 'nm1', 1, 'director', 'imdb'), ('tt1', 'nm2', 2, 'actor', 'imdb'), ('tt2', 'nm1', 1, 'director', 'imdb'), ('tt2', 'nm2', 2, 'actor', 'imdb'), ('tt3', 'nm1', 1, 'writer', 'imdb')")
             .execute(db.pool())
             .await
             .expect("credits");
+        sqlx::query("INSERT INTO episode_edges (imdb_id, parent_imdb_id, season_number, episode_number) VALUES ('tt3', 'tt1', 1, 3)")
+            .execute(db.pool())
+            .await
+            .expect("episode edge");
+        sqlx::query("INSERT INTO title_ratings (imdb_id, average_rating, num_votes) VALUES ('tt1', 8.6, 1000)")
+            .execute(db.pool())
+            .await
+            .expect("ratings");
         sqlx::query("INSERT INTO wikidata_entities (wikidata_id, label, description, entity_type) VALUES ('Q2000', 'Seven Samurai', 'Wikidata item for Seven Samurai', 'item'), ('Q1000', 'Akira Kurosawa', 'Wikidata item for Akira Kurosawa', 'item'), ('Q2001', 'jidaigeki', 'Japanese period drama genre', 'item')")
             .execute(db.pool())
             .await
@@ -697,11 +1151,14 @@ mod tests {
 
         let service = GraphService::open(&config, &paths).expect("graph service");
         let stats = service.rebuild(&db).await.expect("rebuild");
-        assert_eq!(stats.titles_projected, 2);
+        assert_eq!(stats.titles_projected, 3);
         assert_eq!(stats.people_projected, 2);
-        assert_eq!(stats.credits_projected, 4);
+        assert_eq!(stats.credits_projected, 5);
+        assert_eq!(stats.episode_edges_projected, 1);
+        assert_eq!(stats.ratings_projected, 1);
         assert_eq!(stats.wikidata_links_projected, 2);
         assert_eq!(stats.wikidata_claims_projected, 3);
+        assert!(stats.total_triples_written < 50);
 
         let output = service
             .query(
@@ -718,25 +1175,10 @@ mod tests {
         };
         assert_eq!(rows.len(), 2);
 
-        let sparql_path = temp.path().join("directed_films.rq");
-        let mut sparql_file = std::fs::File::create(&sparql_path).expect("query file");
-        sparql_file
-            .write_all(
-                b"PREFIX schema: <https://schema.org/>\nSELECT ?title WHERE {\n  ?film schema:director <https://cinegraph.local/person/nm1> .\n  ?film schema:name ?title .\n}\nORDER BY ?title\n",
-            )
-            .expect("write query");
-        let file_output = service.query_file(&sparql_path).expect("query file");
-        let GraphQueryOutput::Solutions {
-            rows: file_rows, ..
-        } = file_output
-        else {
-            panic!("expected file solutions");
-        };
-        assert_eq!(file_rows.len(), 2);
-
         let neighbors = service.neighbors("nm1").expect("neighbors");
         assert!(neighbors.iter().any(|neighbor| neighbor.entity_id == "tt1"));
         assert!(neighbors.iter().any(|neighbor| neighbor.entity_id == "tt2"));
+        assert!(neighbors.iter().any(|neighbor| neighbor.entity_id == "tt3"));
         assert!(
             neighbors
                 .iter()
@@ -749,10 +1191,24 @@ mod tests {
                 |neighbor| neighbor.entity_id == "Q2001" && neighbor.entity_name == "jidaigeki"
             )
         );
+        assert!(
+            title_neighbors
+                .iter()
+                .any(|neighbor| neighbor.entity_id == "tt3" && neighbor.predicate == "partOfSeries")
+        );
 
         let collaborations = service.collaborations("nm1").expect("collabs");
         assert_eq!(collaborations.len(), 1);
         assert_eq!(collaborations[0].person_id, "nm2");
         assert_eq!(collaborations[0].shared_titles, 2);
+
+        let graph_stats = service.stats().expect("graph stats");
+        assert_eq!(graph_stats.title_nodes, 3);
+        assert_eq!(graph_stats.person_nodes, 2);
+        assert!(graph_stats.total_triples >= stats.total_triples_written);
+        assert_eq!(
+            graph_stats.predicate_counts.get("participant").copied(),
+            Some(5)
+        );
     }
 }

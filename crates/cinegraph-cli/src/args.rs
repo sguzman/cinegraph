@@ -83,6 +83,7 @@ pub enum GraphCommands {
     Query { sparql_file: PathBuf },
     Neighbors { entity_id: String },
     Collaborations { person_id: String },
+    Stats,
 }
 
 #[derive(Debug, Subcommand)]
