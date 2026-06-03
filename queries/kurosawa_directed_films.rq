@@ -1,0 +1,14 @@
+PREFIX schema: <https://schema.org/>
+PREFIX cine: <https://cinegraph.local/>
+
+SELECT ?titleId ?titleName ?year ?rating
+WHERE {
+  ?title schema:director <https://cinegraph.local/person/nm0000041> ;
+         schema:name ?titleName .
+
+  BIND(REPLACE(STR(?title), "^.*/title/", "") AS ?titleId)
+
+  OPTIONAL { ?title schema:datePublished ?year }
+  OPTIONAL { ?title cine:averageRating ?rating }
+}
+ORDER BY ?year ?titleName
